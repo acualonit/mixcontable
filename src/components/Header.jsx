@@ -1,13 +1,15 @@
 import React from 'react';
 import { useLocation } from 'react-router-dom';
 
-function Header({ onToggleSidebar }) {
+function Header({ onToggleSidebar, user, onLogout }) {
   const location = useLocation();
   const getPageTitle = () => {
     const path = location.pathname.substring(1);
     if (!path) return 'Principal';
     return path.charAt(0).toUpperCase() + path.slice(1).replace(/-/g, ' ');
   };
+
+  const displayName = user?.name || user?.email || 'Usuario';
 
   return (
     <div className="fixed-header">
@@ -24,9 +26,15 @@ function Header({ onToggleSidebar }) {
           <i className="bi bi-person-circle"></i>
         </button>
         <ul className="dropdown-menu" aria-labelledby="userDropdown">
-          <li><a className="dropdown-item" href="#">Nombre de Usuario</a></li>
+          <li>
+            <span className="dropdown-item-text fw-semibold">{displayName}</span>
+          </li>
           <li><a className="dropdown-item" href="#">Perfil</a></li>
-          <li><a className="dropdown-item" href="#">Cerrar Sesión</a></li>
+          <li>
+            <button className="dropdown-item" type="button" onClick={onLogout}>
+              Cerrar Sesión
+            </button>
+          </li>
         </ul>
       </div>
       

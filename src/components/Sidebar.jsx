@@ -27,13 +27,15 @@ const menuItems = [
   { id: 'configuracion', title: 'Configuración', icon: 'gear-fill', path: '/configuracion' }
 ];
 
-function Sidebar({ isCollapsed }) {
+function Sidebar({ isCollapsed, allowedMenuIds }) {
   const location = useLocation();
+  const allowedSet = allowedMenuIds && allowedMenuIds.length > 0 ? new Set(allowedMenuIds) : null;
+  const filteredItems = allowedSet ? menuItems.filter(item => allowedSet.has(item.id)) : menuItems;
 
   return (
     <div className={`sidebar d-flex flex-column ${isCollapsed ? 'collapsed' : ''}`}>
       <h4 className="text-center">Menu</h4>
-      {menuItems.map(item => (
+      {filteredItems.map(item => (
         <Link
           key={item.id}
           to={item.path}
