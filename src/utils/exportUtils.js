@@ -2,10 +2,32 @@ import * as XLSX from 'xlsx';
 
 export const exportToExcel = (data, fileName) => {
   try {
+    // crear hoja desde JSON
     const ws = XLSX.utils.json_to_sheet(data);
+
+    // convertir encabezados a mayúsculas y aplicar negrita
+    if (ws && ws['!ref']) {
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      // la primera fila (r = 0) contiene los encabezados generados por json_to_sheet
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+        const cellAddress = XLSX.utils.encode_cell({ c: C, r: 0 });
+        const cell = ws[cellAddress];
+        if (cell && cell.v) {
+          // poner texto en mayúsculas
+          cell.v = String(cell.v).toUpperCase();
+          cell.t = 's';
+          // aplicar estilo de negrita (SheetJS soporta estilos básicos)
+          cell.s = cell.s || {};
+          cell.s.font = { ...(cell.s.font || {}), bold: true };
+        }
+      }
+    }
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Datos");
-    XLSX.writeFile(wb, `${fileName}.xlsx`);
+
+    // Intentar escribir con estilos (cellStyles: true)
+    XLSX.writeFile(wb, `${fileName}.xlsx`, { bookType: 'xlsx', cellStyles: true });
   } catch (error) {
     console.error('Error al exportar a Excel:', error);
     alert('Error al exportar a Excel. Por favor, intente nuevamente.');

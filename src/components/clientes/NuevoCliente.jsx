@@ -8,6 +8,7 @@ function NuevoCliente({ onClose, onSave }) {
     nombreFantasia: '',
     giro: '',
     direccion: '',
+    regionId: '',
     region: '',
     comuna: '',
     ciudad: '',
@@ -26,9 +27,11 @@ function NuevoCliente({ onClose, onSave }) {
 
   const handleRegionChange = (e) => {
     const regionId = parseInt(e.target.value);
+    const regionObj = REGIONES.find(r => r.id === regionId);
     setFormData({
       ...formData,
-      region: regionId,
+      regionId: regionId || '',
+      region: regionObj ? regionObj.nombre : '',
       comuna: '' // Reset comuna when region changes
     });
     setComunasDisponibles(regionId ? getComunasByRegion(regionId) : []);
@@ -114,7 +117,7 @@ function NuevoCliente({ onClose, onSave }) {
                   <label className="form-label">Región</label>
                   <select
                     className="form-select"
-                    value={formData.region}
+                    value={formData.regionId}
                     onChange={handleRegionChange}
                     required
                   >
@@ -133,7 +136,7 @@ function NuevoCliente({ onClose, onSave }) {
                     value={formData.comuna}
                     onChange={(e) => setFormData({...formData, comuna: e.target.value})}
                     required
-                    disabled={!formData.region}
+                    disabled={!formData.regionId}
                   >
                     <option value="">Seleccionar comuna</option>
                     {comunasDisponibles.map(comuna => (

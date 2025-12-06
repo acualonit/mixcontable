@@ -87,6 +87,14 @@ Route::middleware('session')->group(function () {
         Route::delete('/usuarios/{user}', [UserManagementController::class, 'destroy']);
         Route::post('/usuarios/{user}/reset-password', [UserManagementController::class, 'resetPassword']);
 
+        // Clientes
+        Route::get('/clientes', [\App\Http\Controllers\ClienteController::class, 'index']);
+        Route::get('/clientes/inactivos', [\App\Http\Controllers\ClienteController::class, 'inactivos']);
+        Route::post('/clientes', [\App\Http\Controllers\ClienteController::class, 'store']);
+        Route::get('/clientes/{cliente}', [\App\Http\Controllers\ClienteController::class, 'show']);
+        Route::put('/clientes/{cliente}', [\App\Http\Controllers\ClienteController::class, 'update']);
+        Route::delete('/clientes/{cliente}', [\App\Http\Controllers\ClienteController::class, 'destroy']);
+
         // Respaldos
         Route::get('/respaldos', [RespaldosController::class, 'index']);
         Route::post('/respaldos', [RespaldosController::class, 'store']);

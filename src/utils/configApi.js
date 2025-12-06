@@ -78,6 +78,20 @@ export const deleteUsuario = (usuarioId) =>
 export const resetUsuarioPassword = (usuarioId, payload = {}) =>
   request(`/usuarios/${usuarioId}/reset-password`, { method: 'POST', body: payload });
 
+// Clientes
+export const fetchClientes = () => request('/clientes');
+
+export const fetchInactivos = (params = {}) => {
+  const query = new URLSearchParams(params).toString();
+  return request(`/clientes/inactivos${query ? `?${query}` : ''}`);
+};
+
+export const createCliente = (payload) => request('/clientes', { method: 'POST', body: payload });
+
+export const updateCliente = (clienteId, payload) => request(`/clientes/${clienteId}`, { method: 'PUT', body: payload });
+
+export const inactivateCliente = (clienteId) => request(`/clientes/${clienteId}`, { method: 'DELETE' });
+
 export const fetchRespaldos = () => request('/respaldos');
 
 export const generarRespaldo = () =>

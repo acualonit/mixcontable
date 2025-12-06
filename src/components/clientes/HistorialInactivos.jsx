@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { exportToExcel } from '../../utils/exportUtils';
+import { fetchInactivos } from '../../utils/configApi';
 
 function HistorialInactivos({ onBack }) {
   const [filtros, setFiltros] = useState({
@@ -8,35 +9,52 @@ function HistorialInactivos({ onBack }) {
     busqueda: ''
   });
 
-  // Datos de ejemplo para clientes inactivos
-  const [clientesInactivos] = useState([
-    {
-      id: 1,
-      rut: '12.345.678-9',
-      razonSocial: 'Empresa A SpA',
-      nombreFantasia: 'Empresa A',
-      fechaInactivacion: '2023-12-01',
-      horaInactivacion: '15:30',
-      usuario: 'Juan Pérez',
-      motivo: 'Cliente solicitó cierre de cuenta',
-      historialEstados: [
-        {
-          fecha: '2023-01-01',
-          estadoAnterior: null,
-          nuevoEstado: 'activo',
-          usuario: 'Admin',
-          observaciones: 'Creación del cliente'
-        },
-        {
-          fecha: '2023-12-01',
-          estadoAnterior: 'activo',
-          nuevoEstado: 'inactivo',
-          usuario: 'Juan Pérez',
-          observaciones: 'Cliente solicitó cierre de cuenta'
-        }
-      ]
-    }
-  ]);
+  const [clientesInactivos, setClientesInactivos] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const data = await fetchInactivos();
+        // Map backend keys to frontend fields expected by this component
+        const adapt = (c) => {
+          const lastHist = (c.historial_estados && c.historial_estados.length) ? c.historial_estados.slice(-1)[0] : null;
+          let fecha = null;
+          let hora = null;
+
+          if (lastHist && lastHist.fecha && lastHist.accion && lastHist.accion.toLowerCase().includes('inactiv')) {
+            const parts = lastHist.fecha.split(' ');
+            fecha = parts[0] || null;
+            hora = parts[1] || null;
+          } else if (c.updated_at) {
+            const parts = c.updated_at.split(' ');
+            fecha = parts[0] || null;
+            hora = parts[1] || null;
+          }
+
+          return {
+            id: c.id,
+            rut: c.rut,
+            razonSocial: c.razon_social,
+            nombreFantasia: c.nombre_fantasia,
+            fechaInactivacion: fecha,
+            horaInactivacion: hora,
+            usuario: lastHist ? lastHist.usuario : '-',
+            motivo: lastHist ? (lastHist.detalles || c.observacion) : c.observacion,
+            historialEstados: c.historial_estados || [],
+          };
+        };
+
+        setClientesInactivos((data || []).map(adapt));
+      } catch (error) {
+        console.error('Error cargando inactivos', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, []);
 
   const handleExportarExcel = () => {
     const dataToExport = clientesInactivos.map(cliente => ({

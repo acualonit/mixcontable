@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import NuevoCliente from '../components/clientes/NuevoCliente';
 import DetalleCliente from '../components/clientes/DetalleCliente';
 import EditarCliente from '../components/clientes/EditarCliente';
 import InactivarCliente from '../components/clientes/InactivarCliente';
 import HistorialInactivos from '../components/clientes/HistorialInactivos';
-import { exportToExcel } from '../utils/exportUtils';
+import { exportToExcel, prepareDataForExport } from '../utils/exportUtils';
+import { fetchClientes, createCliente, updateCliente, inactivateCliente } from '../utils/configApi';
 
 function Clientes() {
   const [showNuevoCliente, setShowNuevoCliente] = useState(false);
@@ -22,51 +23,48 @@ function Clientes() {
     ciudad: ''
   });
 
-  // Estado para la lista de clientes
-  const [clientes, setClientes] = useState([
-    {
-      id: 1,
-      rut: '12.345.678-9',
-      razonSocial: 'Empresa A SpA',
-      nombreFantasia: 'Empresa A',
-      giro: 'Comercio',
-      ciudad: 'Santiago',
-      contactoPrincipal: 'Juan Pérez',
-      telefonoPrincipal: '+56 9 1234 5678',
-      emailPrincipal: 'contacto@empresaa.cl',
-      condicionVenta: '30',
-      estado: 'activo',
-      historialEstados: [
-        {
-          fecha: '2023-01-01',
-          usuario: 'Admin',
-          accion: 'Creación',
-          detalles: 'Creación inicial del cliente'
-        }
-      ]
-    },
-    {
-      id: 2,
-      rut: '76.543.210-K',
-      razonSocial: 'Comercial B Ltda',
-      nombreFantasia: 'Comercial B',
-      giro: 'Servicios',
-      ciudad: 'Valparaíso',
-      contactoPrincipal: 'María González',
-      telefonoPrincipal: '+56 9 8765 4321',
-      emailPrincipal: 'contacto@comercialb.cl',
-      condicionVenta: '60',
-      estado: 'activo',
-      historialEstados: [
-        {
-          fecha: '2023-02-01',
-          usuario: 'Admin',
-          accion: 'Creación',
-          detalles: 'Creación inicial del cliente'
-        }
-      ]
-    }
-  ]);
+  // Estado para la lista de clientes (se carga desde API)
+  const [clientes, setClientes] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const data = await fetchClientes();
+        // adapt backend keys (snake_case) -> frontend camelCase
+        const adapt = (c) => ({
+          id: c.id,
+          rut: c.rut,
+          razonSocial: c.razon_social,
+          nombreFantasia: c.nombre_fantasia,
+          giro: c.giro,
+          ciudad: c.ciudad,
+          comuna: c.comuna,
+          region: c.region,
+          direccion: c.direccion,
+          contactoCobranza: c.contacto_cobranza,
+          telefonoCobranza: c.tel_cobranza,
+          emailCobranza: c.email_cobranza,
+          contactoPrincipal: c.contacto_principal,
+          telefonoPrincipal: c.telefono_principal,
+          emailPrincipal: c.email_principal,
+          limiteCredito: c.limite_credito,
+          condicionVenta: c.condicion_venta,
+          observaciones: c.observacion,
+          estado: c.estado,
+          historialEstados: c.historial_estados || [],
+        });
+
+        setClientes((data || []).map(adapt));
+      } catch (error) {
+        console.error('Error cargando clientes', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, []);
 
   // Función para filtrar clientes
   const clientesFiltrados = clientes.filter(cliente => {
@@ -92,19 +90,58 @@ function Clientes() {
   const ciudadesUnicas = [...new Set(clientes.map(cliente => cliente.ciudad))];
 
   const handleNuevoCliente = (cliente) => {
-    setClientes([...clientes, { 
-      ...cliente, 
-      id: clientes.length + 1,
-      estado: 'activo',
-      historialEstados: [
-        {
-          fecha: new Date().toISOString(),
-          usuario: 'Usuario Actual', // Esto debería venir del contexto de autenticación
-          accion: 'Creación',
-          detalles: 'Creación inicial del cliente'
-        }
-      ]
-    }]);
+    (async () => {
+      try {
+        const payload = {
+          rut: cliente.rut,
+          razon_social: cliente.razonSocial,
+          nombre_fantasia: cliente.nombreFantasia,
+          giro: cliente.giro,
+          ciudad: cliente.ciudad,
+          comuna: cliente.comuna,
+          region: cliente.region,
+          direccion: cliente.direccion,
+          contacto_cobranza: cliente.contactoCobranza,
+          tel_cobranza: cliente.telefonoCobranza,
+          email_cobranza: cliente.emailCobranza,
+          contacto_principal: cliente.contactoPrincipal,
+          telefono_principal: cliente.telefonoPrincipal,
+          email_principal: cliente.emailPrincipal,
+          limite_credito: cliente.limiteCredito ? parseFloat(cliente.limiteCredito) : null,
+          condicion_venta: cliente.condicionVenta || '0',
+          observacion: cliente.observaciones || null,
+        };
+        const res = await createCliente(payload);
+        const c = res.cliente;
+        setClientes((prev) => [
+          ...prev,
+          {
+            id: c.id,
+            rut: c.rut,
+            razonSocial: c.razon_social,
+            nombreFantasia: c.nombre_fantasia,
+            giro: c.giro,
+            ciudad: c.ciudad,
+            comuna: c.comuna,
+            region: c.region,
+            direccion: c.direccion,
+            contactoCobranza: c.contacto_cobranza,
+            telCobranza: c.tel_cobranza,
+            emailCobranza: c.email_cobranza,
+            contactoPrincipal: c.contacto_principal,
+            telefonoPrincipal: c.telefono_principal,
+            emailPrincipal: c.email_principal,
+            limiteCredito: c.limite_credito,
+            condicionVenta: c.condicion_venta,
+            observaciones: c.observacion,
+            estado: c.estado,
+            historialEstados: c.historial_estados || [],
+          },
+        ]);
+      } catch (error) {
+        console.error('Error creando cliente', error);
+      }
+    })();
   };
 
   const handleVerDetalle = (cliente) => {
@@ -118,11 +155,58 @@ function Clientes() {
   };
 
   const handleGuardarEdicion = (clienteEditado) => {
-    setClientes(clientes.map(cliente => 
-      cliente.id === clienteEditado.id ? clienteEditado : cliente
-    ));
-    setShowEditar(false);
-    setClienteSeleccionado(null);
+    (async () => {
+      try {
+        const payload = {
+          rut: clienteEditado.rut,
+          razon_social: clienteEditado.razonSocial,
+          nombre_fantasia: clienteEditado.nombreFantasia,
+          giro: clienteEditado.giro,
+          ciudad: clienteEditado.ciudad,
+          comuna: clienteEditado.comuna,
+          region: clienteEditado.region,
+          direccion: clienteEditado.direccion,
+          contacto_cobranza: clienteEditado.contactoCobranza,
+          tel_cobranza: clienteEditado.telCobranza,
+          email_cobranza: clienteEditado.emailCobranza,
+          contacto_principal: clienteEditado.contactoPrincipal,
+          telefono_principal: clienteEditado.telefonoPrincipal,
+          email_principal: clienteEditado.emailPrincipal,
+          limite_credito: clienteEditado.limiteCredito || null,
+          condicion_venta: clienteEditado.condicionVenta || '0',
+          observacion: clienteEditado.observaciones || null,
+        };
+        const res = await updateCliente(clienteEditado.id, payload);
+        const c = res.cliente;
+        setClientes((prev) => prev.map((cliente) => (cliente.id === c.id ? {
+          id: c.id,
+          rut: c.rut,
+          razonSocial: c.razon_social,
+          nombreFantasia: c.nombre_fantasia,
+          giro: c.giro,
+          ciudad: c.ciudad,
+          comuna: c.comuna,
+          region: c.region,
+          direccion: c.direccion,
+          contactoCobranza: c.contacto_cobranza,
+          telefonoCobranza: c.tel_cobranza,
+          emailCobranza: c.email_cobranza,
+          contactoPrincipal: c.contacto_principal,
+          telefonoPrincipal: c.telefono_principal,
+          emailPrincipal: c.email_principal,
+          limiteCredito: c.limite_credito,
+          condicionVenta: c.condicion_venta,
+          observaciones: c.observacion,
+          estado: c.estado,
+          historialEstados: c.historial_estados || [],
+        } : cliente)));
+      } catch (error) {
+        console.error('Error actualizando cliente', error);
+      } finally {
+        setShowEditar(false);
+        setClienteSeleccionado(null);
+      }
+    })();
   };
 
   const handleInactivar = (cliente) => {
@@ -131,9 +215,10 @@ function Clientes() {
   };
 
   const handleConfirmarInactivacion = (data) => {
-    setClientes(clientes.map(cliente => {
-      if (cliente.id === data.clienteId) {
-        return {
+    (async () => {
+      try {
+        await inactivateCliente(data.clienteId);
+        setClientes((prev) => prev.map((cliente) => (cliente.id === data.clienteId ? {
           ...cliente,
           estado: 'inactivo',
           historialEstados: [
@@ -142,32 +227,58 @@ function Clientes() {
               fecha: data.fecha,
               usuario: data.usuario,
               accion: 'Inactivación',
-              detalles: data.observaciones
-            }
-          ]
-        };
+              detalles: data.observaciones,
+            },
+          ],
+        } : cliente)));
+      } catch (error) {
+        console.error('Error inactivando cliente', error);
+      } finally {
+        setShowInactivar(false);
+        setClienteSeleccionado(null);
       }
-      return cliente;
-    }));
-    setShowInactivar(false);
-    setClienteSeleccionado(null);
+    })();
   };
 
   const handleExportarExcel = () => {
-    const dataToExport = clientesFiltrados.map(cliente => ({
-      RUT: cliente.rut,
-      'Razón Social': cliente.razonSocial,
-      'Nombre Fantasía': cliente.nombreFantasia || '-',
-      'Giro': cliente.giro,
-      'Ciudad': cliente.ciudad,
-      'Contacto': cliente.contactoPrincipal,
-      'Teléfono': cliente.telefonoPrincipal,
-      'Email': cliente.emailPrincipal,
-      'Condición Venta': cliente.condicionVenta === '0' ? 'Contado' : `${cliente.condicionVenta} días`,
-      'Estado': cliente.estado.charAt(0).toUpperCase() + cliente.estado.slice(1)
-    }));
+    (async () => {
+      try {
+        // pedir al backend la lista completa (forma segura de obtener todos los campos)
+        const backendClients = await fetchClientes();
 
-    exportToExcel(dataToExport, 'Clientes');
+        // Filtrar por los clientes mostrados (clientesFiltrados contiene objetos camelCase sin todos los campos),
+        // así que seleccionamos desde backendClients aquellos que están en clientesFiltrados por id
+        const visibleIds = new Set(clientesFiltrados.map(c => c.id));
+        const rows = backendClients
+          .filter(c => visibleIds.has(c.id))
+          .map(c => {
+            // eliminar timestamps
+            const { created_at, updated_at, deleted_at, ...rest } = c;
+            // convertir arrays/objetos a string para Excel
+            const normalized = {};
+            for (const [k, v] of Object.entries(rest)) {
+              if (v === null || v === undefined) {
+                normalized[k] = '';
+              } else if (Array.isArray(v) || typeof v === 'object') {
+                try {
+                  normalized[k] = JSON.stringify(v);
+                } catch (err) {
+                  normalized[k] = String(v);
+                }
+              } else {
+                normalized[k] = v;
+              }
+            }
+            return normalized;
+          });
+
+        const prepared = prepareDataForExport(rows, { formatDates: true, formatNumbers: true });
+        exportToExcel(prepared, 'Clientes');
+      } catch (error) {
+        console.error('Error exportando clientes:', error);
+        alert('Error exportando clientes. Revisa la consola.');
+      }
+    })();
   };
 
   if (showHistorialInactivos) {

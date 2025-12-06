@@ -56,7 +56,7 @@ function DetalleCliente({ cliente, onClose }) {
                     </tr>
                     <tr>
                       <th>Límite de Crédito:</th>
-                      <td>${cliente.limiteCredito?.toLocaleString()}</td>
+                      <td>{cliente.limiteCredito ? `$${Number(cliente.limiteCredito).toLocaleString()}` : '-'}</td>
                     </tr>
                     <tr>
                       <th>Estado:</th>
