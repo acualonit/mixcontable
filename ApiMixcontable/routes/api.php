@@ -9,6 +9,7 @@ use App\Http\Controllers\EmpresaController;
 use App\Http\Controllers\RespaldosController;
 use App\Http\Controllers\SucursalController;
 use App\Http\Controllers\UserManagementController;
+use App\Http\Controllers\EfectivoController;
 use App\Models\User;
 
 /*
@@ -101,6 +102,14 @@ Route::middleware('session')->group(function () {
         Route::get('/proveedores/{proveedor}', [\App\Http\Controllers\ProveedorController::class, 'show']);
         Route::put('/proveedores/{proveedor}', [\App\Http\Controllers\ProveedorController::class, 'update']);
         Route::delete('/proveedores/{proveedor}', [\App\Http\Controllers\ProveedorController::class, 'destroy']);
+
+        // Efectivo
+        Route::get('/efectivo/saldo', [EfectivoController::class, 'saldo']);
+        Route::get('/efectivo/movimientos', [EfectivoController::class, 'movimientos']);
+        Route::get('/efectivo/eliminados', [EfectivoController::class, 'eliminados']);
+        Route::post('/efectivo', [EfectivoController::class, 'store']);
+        Route::put('/efectivo/{id}', [EfectivoController::class, 'update']);
+        Route::delete('/efectivo/{id}', [EfectivoController::class, 'destroy']);
 
         // Respaldos
         Route::get('/respaldos', [RespaldosController::class, 'index']);
