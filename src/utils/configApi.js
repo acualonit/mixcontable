@@ -92,6 +92,12 @@ export const updateCliente = (clienteId, payload) => request(`/clientes/${client
 
 export const inactivateCliente = (clienteId) => request(`/clientes/${clienteId}`, { method: 'DELETE' });
 
+// Proveedores
+export const fetchProveedores = () => request('/proveedores');
+export const createProveedor = (payload) => request('/proveedores', { method: 'POST', body: payload });
+export const updateProveedor = (proveedorId, payload) => request(`/proveedores/${proveedorId}`, { method: 'PUT', body: payload });
+export const inactivateProveedor = (proveedorId) => request(`/proveedores/${proveedorId}`, { method: 'DELETE' });
+
 export const fetchRespaldos = () => request('/respaldos');
 
 export const generarRespaldo = () =>

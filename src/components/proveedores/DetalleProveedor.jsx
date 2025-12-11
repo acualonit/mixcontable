@@ -29,7 +29,7 @@ function DetalleProveedor({ proveedor, onClose }) {
                     </tr>
                     <tr>
                       <th>Giro:</th>
-                      <td>{proveedor.giro}</td>
+                      <td>{proveedor.giro || '-'}</td>
                     </tr>
                     <tr>
                       <th>Dirección:</th>
@@ -55,12 +55,12 @@ function DetalleProveedor({ proveedor, onClose }) {
                 <table className="table table-sm">
                   <tbody>
                     <tr>
-                      <th>Condición de Pago:</th>
-                      <td>{proveedor.condicionPago === '0' ? 'Contado' : `${proveedor.condicionPago} días`}</td>
+                      <th>Método de Pago:</th>
+                      <td>{proveedor.metodoPago ? (proveedor.metodoPago.charAt(0).toUpperCase() + proveedor.metodoPago.slice(1)) : (proveedor.condicionPago ? proveedor.condicionPago : '-')}</td>
                     </tr>
                     <tr>
                       <th>Límite de Crédito:</th>
-                      <td>${proveedor.limiteCredito?.toLocaleString()}</td>
+                      <td>{proveedor.limiteCredito ? `$${proveedor.limiteCredito.toLocaleString()}` : '-'}</td>
                     </tr>
                     <tr>
                       <th>Estado:</th>
@@ -82,15 +82,15 @@ function DetalleProveedor({ proveedor, onClose }) {
                   <tbody>
                     <tr>
                       <th>Nombre:</th>
-                      <td>{proveedor.contactoPrincipal}</td>
+                      <td>{proveedor.contactoPrincipal || '-'}</td>
                     </tr>
                     <tr>
                       <th>Teléfono:</th>
-                      <td>{proveedor.telefonoPrincipal}</td>
+                      <td>{proveedor.telefonoPrincipal || '-'}</td>
                     </tr>
                     <tr>
                       <th>Email:</th>
-                      <td>{proveedor.emailPrincipal}</td>
+                      <td>{proveedor.emailPrincipal || '-'}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -101,15 +101,15 @@ function DetalleProveedor({ proveedor, onClose }) {
                   <tbody>
                     <tr>
                       <th>Nombre:</th>
-                      <td>{proveedor.contactoPagos || '-'}</td>
+                      <td>{proveedor.nombre_vendedor || '-'}</td>
                     </tr>
                     <tr>
                       <th>Teléfono:</th>
-                      <td>{proveedor.telefonoPagos || '-'}</td>
+                      <td>{proveedor.celular_vendedor || proveedor.telefono || '-'}</td>
                     </tr>
                     <tr>
                       <th>Email:</th>
-                      <td>{proveedor.emailPagos || '-'}</td>
+                      <td>{proveedor.correo_vendedor || proveedor.correo || '-'}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -228,10 +228,10 @@ function DetalleProveedor({ proveedor, onClose }) {
               </div>
             </div>
 
-            {proveedor.observaciones && (
+            {(proveedor.observacion || proveedor.comentario) && (
               <div className="mb-4">
                 <h6>Observaciones</h6>
-                <p>{proveedor.observaciones}</p>
+                <p>{proveedor.observacion || proveedor.comentario}</p>
               </div>
             )}
           </div>

@@ -95,6 +95,13 @@ Route::middleware('session')->group(function () {
         Route::put('/clientes/{cliente}', [\App\Http\Controllers\ClienteController::class, 'update']);
         Route::delete('/clientes/{cliente}', [\App\Http\Controllers\ClienteController::class, 'destroy']);
 
+        // Proveedores
+        Route::get('/proveedores', [\App\Http\Controllers\ProveedorController::class, 'index']);
+        Route::post('/proveedores', [\App\Http\Controllers\ProveedorController::class, 'store']);
+        Route::get('/proveedores/{proveedor}', [\App\Http\Controllers\ProveedorController::class, 'show']);
+        Route::put('/proveedores/{proveedor}', [\App\Http\Controllers\ProveedorController::class, 'update']);
+        Route::delete('/proveedores/{proveedor}', [\App\Http\Controllers\ProveedorController::class, 'destroy']);
+
         // Respaldos
         Route::get('/respaldos', [RespaldosController::class, 'index']);
         Route::post('/respaldos', [RespaldosController::class, 'store']);

@@ -3,23 +3,25 @@ import { REGIONES, getComunasByRegion } from '../../utils/regiones';
 
 function EditarProveedor({ proveedor, onClose, onSave }) {
   const [formData, setFormData] = useState({
+    id: proveedor.id,
     rut: proveedor.rut,
     razonSocial: proveedor.razonSocial,
     nombreFantasia: proveedor.nombreFantasia || '',
-    giro: proveedor.giro,
+    giro: proveedor.giro || '',
+    paginaWeb: proveedor.pagina_web || proveedor.paginaWeb || '',
     region: proveedor.region || '',
     comuna: proveedor.comuna || '',
     direccion: proveedor.direccion,
     ciudad: proveedor.ciudad,
     contactoPrincipal: proveedor.contactoPrincipal,
-    telefonoPrincipal: proveedor.telefonoPrincipal,
-    emailPrincipal: proveedor.emailPrincipal,
-    contactoPagos: proveedor.contactoPagos || '',
-    telefonoPagos: proveedor.telefonoPagos || '',
-    emailPagos: proveedor.emailPagos || '',
-    condicionPago: proveedor.condicionPago,
+    telefonoPrincipal: proveedor.telefonoPrincipal || proveedor.telefono || '',
+    emailPrincipal: proveedor.emailPrincipal || proveedor.correo || '',
+    contactoPagos: proveedor.nombre_vendedor || '',
+    telefonoPagos: proveedor.celular_vendedor || '',
+    emailPagos: proveedor.correo_vendedor || '',
+      metodoPago: proveedor.metodoPago || proveedor.metodo_pago || 'efectivo',
     limiteCredito: proveedor.limiteCredito?.toString() || '',
-    observaciones: proveedor.observaciones || ''
+    observaciones: proveedor.observacion || proveedor.comentario || ''
   });
 
   const [comunasDisponibles, setComunasDisponibles] = useState([]);
@@ -55,8 +57,9 @@ function EditarProveedor({ proveedor, onClose, onSave }) {
                     type="text"
                     className="form-control"
                     value={formData.rut}
-                    onChange={(e) => setFormData({...formData, rut: e.target.value})}
-                    required
+                    readOnly
+                    tabIndex="-1"
+                    aria-readonly="true"
                   />
                 </div>
                 <div className="col-md-6">
@@ -65,8 +68,9 @@ function EditarProveedor({ proveedor, onClose, onSave }) {
                     type="text"
                     className="form-control"
                     value={formData.razonSocial}
-                    onChange={(e) => setFormData({...formData, razonSocial: e.target.value})}
-                    required
+                    readOnly
+                    tabIndex="-1"
+                    aria-readonly="true"
                   />
                 </div>
               </div>
@@ -88,7 +92,19 @@ function EditarProveedor({ proveedor, onClose, onSave }) {
                     className="form-control"
                     value={formData.giro}
                     onChange={(e) => setFormData({...formData, giro: e.target.value})}
-                    required
+                  />
+                </div>
+              </div>
+
+              <div className="row mb-3">
+                <div className="col-md-6">
+                  <label className="form-label">Página Web</label>
+                  <input
+                    type="url"
+                    className="form-control"
+                    value={formData.paginaWeb}
+                    onChange={(e) => setFormData({...formData, paginaWeb: e.target.value})}
+                    placeholder="https://www.ejemplo.com"
                   />
                 </div>
               </div>
@@ -177,7 +193,6 @@ function EditarProveedor({ proveedor, onClose, onSave }) {
                     className="form-control"
                     value={formData.telefonoPrincipal}
                     onChange={(e) => setFormData({...formData, telefonoPrincipal: e.target.value})}
-                    required
                   />
                 </div>
                 <div className="col-md-4">
@@ -187,7 +202,6 @@ function EditarProveedor({ proveedor, onClose, onSave }) {
                     className="form-control"
                     value={formData.emailPrincipal}
                     onChange={(e) => setFormData({...formData, emailPrincipal: e.target.value})}
-                    required
                   />
                 </div>
               </div>
@@ -225,19 +239,17 @@ function EditarProveedor({ proveedor, onClose, onSave }) {
 
               <div className="row mb-3">
                 <div className="col-md-6">
-                  <label className="form-label">Condición de Pago (días)</label>
-                  <select
-                    className="form-select"
-                    value={formData.condicionPago}
-                    onChange={(e) => setFormData({...formData, condicionPago: e.target.value})}
-                    required
-                  >
-                    <option value="0">Contado</option>
-                    <option value="30">30 días</option>
-                    <option value="45">45 días</option>
-                    <option value="60">60 días</option>
-                    <option value="90">90 días</option>
-                  </select>
+                    <label className="form-label">Método de Pago</label>
+                    <select
+                      className="form-select"
+                      value={formData.metodoPago}
+                      onChange={(e) => setFormData({...formData, metodoPago: e.target.value})}
+                      required
+                    >
+                      <option value="efectivo">Efectivo</option>
+                      <option value="cheque">Cheque</option>
+                      <option value="transferencia">Transferencia</option>
+                    </select>
                 </div>
                 <div className="col-md-6">
                   <label className="form-label">Límite de Crédito</label>
@@ -246,7 +258,6 @@ function EditarProveedor({ proveedor, onClose, onSave }) {
                     className="form-control"
                     value={formData.limiteCredito}
                     onChange={(e) => setFormData({...formData, limiteCredito: e.target.value})}
-                    required
                   />
                 </div>
               </div>

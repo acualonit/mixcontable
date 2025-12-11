@@ -81,6 +81,7 @@ function EditarCliente({ cliente, onClose, onSave }) {
                     onChange={(e) => setFormData({...formData, rut: e.target.value})}
                     required
                     placeholder="12.345.678-9"
+                    readOnly
                   />
                 </div>
                 <div className="col-md-6">
@@ -91,6 +92,7 @@ function EditarCliente({ cliente, onClose, onSave }) {
                     value={formData.razonSocial}
                     onChange={(e) => setFormData({...formData, razonSocial: e.target.value})}
                     required
+                    readOnly
                   />
                 </div>
               </div>

@@ -5,6 +5,8 @@ function NuevoProveedor({ onClose, onSave }) {
   const [formData, setFormData] = useState({
     razonSocial: '',
     rut: '',
+    giro: '',
+    limiteCredito: '',
     region: '',
     comuna: '',
     ciudad: '',
@@ -161,6 +163,16 @@ function NuevoProveedor({ onClose, onSave }) {
                     onChange={(e) => setFormData({...formData, nombreComercial: e.target.value})}
                   />
                 </div>
+                  <div className="col-md-6">
+                    <label className="form-label">Giro</label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      value={formData.giro}
+                      onChange={(e) => setFormData({...formData, giro: e.target.value})}
+                      placeholder="Ej: Comercio, Servicios"
+                    />
+                  </div>
                 <div className="col-md-6">
                   <label className="form-label">Página Web</label>
                   <input
@@ -258,6 +270,19 @@ function NuevoProveedor({ onClose, onSave }) {
                   <option value="cheque">Cheque</option>
                   <option value="transferencia">Transferencia</option>
                 </select>
+              </div>
+
+              <div className="row mb-3">
+                <div className="col-md-6">
+                  <label className="form-label">Límite de Crédito</label>
+                  <input
+                    type="number"
+                    className="form-control"
+                    value={formData.limiteCredito}
+                    onChange={(e) => setFormData({...formData, limiteCredito: e.target.value})}
+                    placeholder="0.00"
+                  />
+                </div>
               </div>
 
               {/* Datos bancarios (solo si es transferencia) */}

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import NuevoProveedor from '../components/proveedores/NuevoProveedor';
 import DetalleProveedor from '../components/proveedores/DetalleProveedor';
 import EditarProveedor from '../components/proveedores/EditarProveedor';
-import { exportToExcel } from '../utils/exportUtils';
+import { exportToExcel, prepareDataForExport } from '../utils/exportUtils';
+import { fetchProveedores, createProveedor, updateProveedor, inactivateProveedor } from '../utils/configApi';
 
 function Proveedores() {
   const [showNuevoProveedor, setShowNuevoProveedor] = useState(false);
@@ -15,38 +16,81 @@ function Proveedores() {
     ciudad: ''
   });
 
-  // Datos de ejemplo para proveedores
-  const [proveedores] = useState([
-    {
-      id: 1,
-      rut: '76.543.210-K',
-      razonSocial: 'Proveedor A Ltda.',
-      nombreFantasia: 'Proveedor A',
-      giro: 'Venta de Insumos',
-      ciudad: 'Santiago',
-      contactoPrincipal: 'María González',
-      telefonoPrincipal: '+56 9 8765 4321',
-      emailPrincipal: 'contacto@proveedora.cl',
-      condicionPago: '30',
-      estado: 'activo'
-    }
-  ]);
+  const [proveedores, setProveedores] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Normaliza el objeto recibido desde el backend a las claves que usa la UI
+  const adaptProveedor = (p) => ({
+    id: p.id,
+    rut: p.rut,
+    razonSocial: p.razon_social,
+    giro: p.giro || null,
+    nombreFantasia: p.nombre_comercial || p.nombre_fantasia || null,
+    paginaWeb: p.pagina_web || null,
+    ciudad: p.ciudad,
+    contactoPrincipal: p.nombre_vendedor || '',
+    telefonoPrincipal: p.telefono || p.celular || p.celular_vendedor || '',
+    emailPrincipal: p.correo || p.correo_vendedor || '',
+    metodoPago: p.metodo_pago,
+    estado: p.estado,
+    direccion: p.direccion,
+    comuna: p.comuna,
+    region: p.region,
+    observacion: p.comentario || p.observacion || null,
+    pagina_web: p.pagina_web || null,
+    correo_finanzas: p.correo_finanzas || null,
+    nombre_vendedor: p.nombre_vendedor || null,
+    celular_vendedor: p.celular_vendedor || null,
+    correo_vendedor: p.correo_vendedor || null,
+    telefono: p.telefono || null,
+    celular: p.celular || null,
+    metodo_pago: p.metodo_pago || null,
+    comentario: p.comentario || null,
+    limiteCredito: p.limite_credito != null ? Number(p.limite_credito) : null,
+    banco_nombre_titular: p.banco_nombre_titular || null,
+    banco_rut_titular: p.banco_rut_titular || null,
+    banco_nombre: p.banco_nombre || null,
+    banco_tipo_cuenta: p.banco_tipo_cuenta || null,
+    banco_numero_cuenta: p.banco_numero_cuenta || null,
+    banco_correo: p.banco_correo || null,
+    historialEstados: p.historial_estados || [],
+  });
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      try {
+        const data = await fetchProveedores();
+        setProveedores((data || []).map(adaptProveedor));
+      } catch (error) {
+        console.error('Error cargando proveedores', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, []);
 
   const handleExportarExcel = () => {
-    const dataToExport = proveedores.map(proveedor => ({
-      RUT: proveedor.rut,
-      'Razón Social': proveedor.razonSocial,
-      'Nombre Fantasía': proveedor.nombreFantasia || '-',
-      'Giro': proveedor.giro,
-      'Ciudad': proveedor.ciudad,
-      'Contacto': proveedor.contactoPrincipal,
-      'Teléfono': proveedor.telefonoPrincipal,
-      'Email': proveedor.emailPrincipal,
-      'Condición Pago': proveedor.condicionPago === '0' ? 'Contado' : `${proveedor.condicionPago} días`,
-      'Estado': proveedor.estado.charAt(0).toUpperCase() + proveedor.estado.slice(1)
-    }));
-
-    exportToExcel(dataToExport, 'Proveedores');
+    (async () => {
+      try {
+        const backend = await fetchProveedores();
+        const rows = backend.map(({ created_at, updated_at, deleted_at, ...rest }) => {
+          const normalized = {};
+          for (const [k, v] of Object.entries(rest)) {
+            if (v === null || v === undefined) normalized[k] = '';
+            else if (Array.isArray(v) || typeof v === 'object') normalized[k] = JSON.stringify(v);
+            else normalized[k] = v;
+          }
+          return normalized;
+        });
+        const prepared = prepareDataForExport(rows);
+        exportToExcel(prepared, 'Proveedores');
+      } catch (err) {
+        console.error('Error exportando proveedores', err);
+        alert('Error exportando proveedores');
+      }
+    })();
   };
 
   // Obtener ciudades únicas para el filtro
@@ -186,7 +230,6 @@ function Proveedores() {
                   <th>RUT</th>
                   <th>Razón Social</th>
                   <th>Nombre Fantasía</th>
-                  <th>Giro</th>
                   <th>Ciudad</th>
                   <th>Contacto</th>
                   <th>Teléfono</th>
@@ -201,7 +244,6 @@ function Proveedores() {
                     <td>{proveedor.rut}</td>
                     <td>{proveedor.razonSocial}</td>
                     <td>{proveedor.nombreFantasia || '-'}</td>
-                    <td>{proveedor.giro}</td>
                     <td>{proveedor.ciudad}</td>
                     <td>{proveedor.contactoPrincipal}</td>
                     <td>{proveedor.telefonoPrincipal}</td>
@@ -216,9 +258,9 @@ function Proveedores() {
                         <button 
                           className="btn btn-sm btn-primary"
                           onClick={() => {
-                            setProveedorSeleccionado(proveedor);
-                            setShowDetalle(true);
-                          }}
+                                setProveedorSeleccionado(proveedor);
+                                setShowDetalle(true);
+                              }}
                           title="Ver detalle"
                         >
                           <i className="bi bi-eye"></i>
@@ -238,8 +280,15 @@ function Proveedores() {
                             className="btn btn-sm btn-danger"
                             onClick={() => {
                               if (window.confirm('¿Está seguro de inactivar este proveedor?')) {
-                                // Aquí iría la lógica para inactivar el proveedor
-                                console.log('Inactivar proveedor:', proveedor.id);
+                                (async () => {
+                                  try {
+                                    await inactivateProveedor(proveedor.id);
+                                    setProveedores(prev => prev.map(p => p.id === proveedor.id ? { ...p, estado: 'inactivo', historialEstados: [...(p.historialEstados||[]), { fecha: new Date().toISOString(), usuario: 'Usuario', accion: 'Inactivación', detalles: 'Inactivado desde UI' }] } : p));
+                                  } catch (error) {
+                                    console.error('Error inactivando proveedor', error);
+                                    alert('Error inactivando proveedor');
+                                  }
+                                })();
                               }
                             }}
                             title="Inactivar proveedor"
@@ -253,7 +302,7 @@ function Proveedores() {
                 ))}
                 {proveedoresFiltrados.length === 0 && (
                   <tr>
-                    <td colSpan="10" className="text-center">
+                    <td colSpan="9" className="text-center">
                       No se encontraron proveedores con los filtros seleccionados
                     </td>
                   </tr>
@@ -266,11 +315,49 @@ function Proveedores() {
 
       {/* Modales */}
       {showNuevoProveedor && (
-        <NuevoProveedor 
+        <NuevoProveedor
           onClose={() => setShowNuevoProveedor(false)}
           onSave={(data) => {
-            console.log('Nuevo proveedor:', data);
-            setShowNuevoProveedor(false);
+            (async () => {
+              try {
+                const payload = {
+                  razon_social: data.razonSocial,
+                  rut: data.rut,
+                  nombre_comercial: data.nombreComercial || data.nombreFantasia || null,
+                  giro: data.giro || null,
+                  pagina_web: data.paginaWeb || null,
+                  ciudad: data.ciudad || null,
+                  limite_credito: data.limiteCredito ? parseFloat(data.limiteCredito) : null,
+                  comuna: data.comuna || null,
+                  region: data.region || null,
+                  direccion: data.direccion || null,
+                  correo: data.correo || null,
+                  correo_finanzas: data.correoFinanzas || null,
+                  telefono: data.telefono || null,
+                  celular: data.celular || null,
+                  nombre_vendedor: data.nombreVendedor || null,
+                  celular_vendedor: data.celularVendedor || null,
+                  correo_vendedor: data.correoVendedor || null,
+                  metodo_pago: data.metodoPago || 'efectivo',
+                  banco_nombre_titular: data.datosBancarios?.nombre || null,
+                  banco_rut_titular: data.datosBancarios?.rut || null,
+                  banco_nombre: data.datosBancarios?.banco || null,
+                  banco_tipo_cuenta: data.datosBancarios?.tipoCuenta || null,
+                  banco_numero_cuenta: data.datosBancarios?.numeroCuenta || null,
+                  banco_correo: data.datosBancarios?.correo || null,
+                  comentario: data.comentario || null,
+                };
+
+                const res = await createProveedor(payload);
+                const p = res.proveedor;
+                setProveedores(prev => [...prev, adaptProveedor(p)]);
+              } catch (error) {
+                console.error('Error creando proveedor', error);
+                alert('Error creando proveedor');
+              } finally {
+                setShowNuevoProveedor(false);
+              }
+            })();
           }}
         />
       )}
@@ -293,9 +380,47 @@ function Proveedores() {
             setProveedorSeleccionado(null);
           }}
           onSave={(proveedorEditado) => {
-            console.log('Proveedor editado:', proveedorEditado);
-            setShowEditar(false);
-            setProveedorSeleccionado(null);
+            (async () => {
+              try {
+                const payload = {
+                  razon_social: proveedorEditado.razonSocial,
+                  rut: proveedorEditado.rut,
+                  nombre_comercial: proveedorEditado.nombreFantasia,
+                  giro: proveedorEditado.giro || null,
+                  pagina_web: proveedorEditado.paginaWeb || null,
+                  ciudad: proveedorEditado.ciudad || null,
+                  limite_credito: proveedorEditado.limiteCredito ? parseFloat(proveedorEditado.limiteCredito) : null,
+                  comuna: proveedorEditado.comuna || null,
+                  region: proveedorEditado.region || null,
+                  direccion: proveedorEditado.direccion || null,
+                  correo: proveedorEditado.emailPrincipal || null,
+                  correo_finanzas: proveedorEditado.correo_finanzas || null,
+                  telefono: proveedorEditado.telefono || proveedorEditado.telefonoPrincipal || null,
+                  celular: proveedorEditado.celular || null,
+                  nombre_vendedor: proveedorEditado.nombre_vendedor || proveedorEditado.contactoPrincipal || null,
+                  celular_vendedor: proveedorEditado.celular_vendedor || proveedorEditado.telefonoPagos || null,
+                  correo_vendedor: proveedorEditado.correo_vendedor || proveedorEditado.emailPagos || null,
+                  metodo_pago: proveedorEditado.metodoPago || 'efectivo',
+                  banco_nombre_titular: proveedorEditado.banco_nombre_titular || proveedorEditado.bancoNombreTitular || null,
+                  banco_rut_titular: proveedorEditado.banco_rut_titular || proveedorEditado.bancoRutTitular || null,
+                  banco_nombre: proveedorEditado.banco_nombre || proveedorEditado.bancoNombre || null,
+                  banco_tipo_cuenta: proveedorEditado.banco_tipo_cuenta || proveedorEditado.bancoTipoCuenta || null,
+                  banco_numero_cuenta: proveedorEditado.banco_numero_cuenta || proveedorEditado.bancoNumeroCuenta || null,
+                  banco_correo: proveedorEditado.banco_correo || proveedorEditado.bancoCorreo || null,
+                  comentario: proveedorEditado.observaciones || proveedorEditado.comentario || null,
+                };
+
+                const res = await updateProveedor(proveedorEditado.id, payload);
+                const p = res.proveedor;
+                setProveedores(prev => prev.map(item => item.id === p.id ? adaptProveedor(p) : item));
+              } catch (error) {
+                console.error('Error actualizando proveedor', error);
+                alert('Error actualizando proveedor');
+              } finally {
+                setShowEditar(false);
+                setProveedorSeleccionado(null);
+              }
+            })();
           }}
         />
       )}
