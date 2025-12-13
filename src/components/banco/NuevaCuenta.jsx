@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-function NuevaCuenta({ onClose, onSave }) {
+function NuevaCuenta({ onClose, onSave, sucursales = [] }) {
   const [formData, setFormData] = useState({
     banco: '',
     tipoCuenta: '',
@@ -76,9 +76,17 @@ function NuevaCuenta({ onClose, onSave }) {
                   required
                 >
                   <option value="">Seleccionar sucursal</option>
-                  <option value="central">Sucursal Central</option>
-                  <option value="norte">Sucursal Norte</option>
-                  <option value="sur">Sucursal Sur</option>
+                  {sucursales.length > 0 ? (
+                    sucursales.map(s => (
+                      <option key={s.id} value={s.id}>{s.nombre ?? s.name ?? s.nombre_sucursal ?? `Sucursal ${s.id}`}</option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="central">Sucursal Central</option>
+                      <option value="norte">Sucursal Norte</option>
+                      <option value="sur">Sucursal Sur</option>
+                    </>
+                  )}
                 </select>
               </div>
 

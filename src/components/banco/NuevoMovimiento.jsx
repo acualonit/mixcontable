@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-function NuevoMovimiento({ onClose, onSave, cuentas }) {
+function NuevoMovimiento({ onClose, onSave, cuentas = [], initialData = null }) {
   const [formData, setFormData] = useState({
     fecha: new Date().toISOString().split('T')[0],
     tipo: 'ingreso',
@@ -12,6 +12,23 @@ function NuevoMovimiento({ onClose, onSave, cuentas }) {
     referencia: '',
     observaciones: ''
   });
+
+  React.useEffect(() => {
+    if (initialData) {
+      setFormData(prev => ({
+        ...prev,
+        fecha: initialData.fecha ?? prev.fecha,
+        tipo: (initialData.tipo || initialData.tipo_movimiento || prev.tipo),
+        categoria: initialData.categoria ?? initialData.descripcion ?? prev.categoria,
+        descripcion: initialData.descripcion ?? prev.descripcion,
+        monto: initialData.monto ?? initialData.valor ?? initialData.amount ?? prev.monto,
+        cuenta: initialData.cuenta_id ?? initialData.cuenta ?? prev.cuenta,
+        referencia: initialData.referencia ?? prev.referencia,
+        observaciones: initialData.observaciones ?? prev.observaciones,
+        sucursal: initialData.cuenta_sucursal_nombre ?? initialData.sucursal ?? prev.sucursal
+      }));
+    }
+  }, [initialData]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -61,10 +78,10 @@ function NuevoMovimiento({ onClose, onSave, cuentas }) {
                   required
                 >
                   <option value="">Seleccionar categoría</option>
-                  <option value="transferencia">Transferencia</option>
-                  <option value="cheque">Cheque</option>
-                  <option value="deposito">Depósito Bancario</option>
-                  <option value="transbank">Transbank</option>
+                  <option value="Transferencia">Transferencia</option>
+                  <option value="Cheque">Cheque</option>
+                  <option value="Deposito Bancario">Deposito Bancario</option>
+                  <option value="Transbank">Transbank</option>
                 </select>
               </div>
 
@@ -92,17 +109,12 @@ function NuevoMovimiento({ onClose, onSave, cuentas }) {
 
               <div className="mb-3">
                 <label className="form-label">Sucursal</label>
-                <select
-                  className="form-select"
+                <input
+                  type="text"
+                  className="form-control"
                   value={formData.sucursal}
-                  onChange={(e) => setFormData({...formData, sucursal: e.target.value})}
-                  required
-                >
-                  <option value="">Seleccionar sucursal</option>
-                  <option value="central">Sucursal Central</option>
-                  <option value="norte">Sucursal Norte</option>
-                  <option value="sur">Sucursal Sur</option>
-                </select>
+                  readOnly
+                />
               </div>
 
               <div className="mb-3">
@@ -110,13 +122,23 @@ function NuevoMovimiento({ onClose, onSave, cuentas }) {
                 <select
                   className="form-select"
                   value={formData.cuenta}
-                  onChange={(e) => setFormData({...formData, cuenta: e.target.value})}
+                  onChange={(e) => {
+                    const selectedId = Number(e.target.value);
+                    setFormData((prev) => ({ ...prev, cuenta: selectedId }));
+                    const sel = cuentas.find(c => Number(c.id) === selectedId);
+                    if (sel) {
+                      const nombre = sel.sucursal_nombre ?? sel.nombre ?? sel.name ?? '';
+                      setFormData((prev) => ({ ...prev, sucursal: nombre }));
+                    } else {
+                      setFormData((prev) => ({ ...prev, sucursal: '' }));
+                    }
+                  }}
                   required
                 >
                   <option value="">Seleccionar cuenta</option>
                   {cuentas.map(cuenta => (
                     <option key={cuenta.id} value={cuenta.id}>
-                      {cuenta.banco} - {cuenta.numeroCuenta}
+                      {cuenta.banco} - {cuenta.numero_cuenta ?? cuenta.numeroCuenta}
                     </option>
                   ))}
                 </select>

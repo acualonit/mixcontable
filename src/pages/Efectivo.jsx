@@ -17,6 +17,7 @@ function Efectivo() {
   const [deletedMovimientos, setDeletedMovimientos] = useState([]);
   const [saldo, setSaldo] = useState(null);
   const [movimientos, setMovimientos] = useState([]);
+  const [usersMap, setUsersMap] = useState({});
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -27,6 +28,18 @@ function Efectivo() {
         setSaldo(s?.saldo ?? 0);
         const mv = await fetchMovimientos();
         setMovimientos(mv?.data || []);
+        // cargar usuarios para mostrar nombres cuando el campo contiene un id
+        try {
+          const u = await fetchUsuarios();
+          const map = {};
+          (u?.users || u?.data || []).forEach(x => {
+            map[String(x.id)] = x.name ?? x.username ?? `${x.name ?? ''}`;
+          });
+          setUsersMap(map);
+        } catch (err) {
+          // ignore users load error
+          setUsersMap({});
+        }
       } catch (err) {
         console.error('Error cargando efectivo:', err);
       } finally {
@@ -98,6 +111,45 @@ function Efectivo() {
     setShowViewMovimiento(true);
   };
 
+  // Filtrado y cálculo de saldo acumulado (running balance) para la tabla
+  const computeFilteredAndTotals = () => {
+    const filtered = movimientos.filter(m => {
+      const raw = filtroFecha ?? '';
+      const f = raw.toString().trim();
+      // tratar placeholders o textos como vacíos
+      if (!f || f.toLowerCase().includes('dd') || f.toLowerCase().includes('mm') || f.toLowerCase().includes('aaaa')) return true;
+      // input date devuelve yyyy-mm-dd; asegurarse de comparar en ISO
+      // si usuario ingresó en formato dd/mm/yyyy, convertirlo
+      let want = f;
+      if (f.includes('/')) {
+        const parts = f.split('/');
+        if (parts.length === 3) {
+          // dd/mm/yyyy -> yyyy-mm-dd
+          want = `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
+        }
+      }
+      return (m.fecha || '').toString().startsWith(want);
+    });
+
+    let running = 0;
+    const rows = filtered.map((m) => {
+      const detalle = m.detalle ?? m.descripcion ?? m.description ?? '';
+      const tipoRaw = (m.tipo ?? m.tipo_movimiento ?? m.movement_type ?? '').toString();
+      const tipoNorm = tipoRaw.toLowerCase();
+      const isIngreso = tipoNorm.includes('ingreso') || tipoRaw.toUpperCase() === 'INGRESO';
+        const usuarioShow = m.usuario_nombre ?? m.usuario ?? m.user ?? m.user_id ?? m.userId ?? m.origen ?? '';
+      const monto = Number(m.monto) || 0;
+      running = isIngreso ? running + monto : running - monto;
+      return { row: m, detalle, isIngreso, usuarioShow, monto, running };
+    });
+
+    const totalMonto = rows.reduce((s, r) => s + (Number(r.monto) || 0), 0);
+    const totalAcumulado = rows.length ? rows[rows.length - 1].running : 0;
+    return { filteredRows: rows, totalMonto, totalAcumulado };
+  };
+
+  const { filteredRows, totalMonto, totalAcumulado } = computeFilteredAndTotals();
+
   return (
     <div className="container mt-4">
       <div className="d-flex justify-content-between align-items-center mb-4">
@@ -153,7 +205,7 @@ function Efectivo() {
                   <dd className="col-sm-8">{viewMovimiento.sucursal ?? ''}</dd>
 
                   <dt className="col-sm-4">Usuario</dt>
-                  <dd className="col-sm-8">{viewMovimiento.usuario ?? viewMovimiento.origen ?? ''}</dd>
+                  <dd className="col-sm-8">{(viewMovimiento.usuario_nombre ?? (usersMap[String(viewMovimiento.user_id ?? viewMovimiento.userId ?? viewMovimiento.usuario ?? viewMovimiento.user ?? viewMovimiento.origen)] ?? viewMovimiento.usuario ?? viewMovimiento.user ?? viewMovimiento.origen ?? ''))}</dd>
                 </dl>
               </div>
               <div className="modal-footer">
@@ -188,18 +240,23 @@ function Efectivo() {
                         <tr><td colSpan="5" className="text-center">No hay movimientos eliminados.</td></tr>
                       )}
                       {deletedMovimientos.map(d => {
-                        const usuarioShow = d.usuario ?? d.user ?? d.origen ?? '';
+                        const usuarioShow = d.usuario_nombre ?? d.usuario ?? d.user ?? d.user_id ?? d.userId ?? d.origen ?? '';
+                        let displayDeletedUser = usuarioShow ?? '';
+                        if (displayDeletedUser && /^[0-9]+$/.test(displayDeletedUser) && usersMap[String(displayDeletedUser)]) {
+                          displayDeletedUser = usersMap[String(displayDeletedUser)];
+                        }
+                        if (!displayDeletedUser) displayDeletedUser = '-';
                         const tipoRaw = (d.tipo ?? d.tipo_movimiento ?? '').toString();
                         const tipoNorm = tipoRaw.toLowerCase();
                         const isIngreso = tipoNorm.includes('ingreso') || tipoRaw.toUpperCase() === 'INGRESO';
                         return (
                           <tr key={d.id}>
                             <td>{d.deleted_at ?? ''}</td>
-                            <td>{usuarioShow}</td>
+                            <td>{displayDeletedUser}</td>
                             <td>{isIngreso ? <span className="badge bg-success">Ingreso</span> : <span className="badge bg-danger">Salida</span>}</td>
                             <td className={isIngreso ? 'text-success' : 'text-danger'}>{new Intl.NumberFormat('es-CL').format(d.monto)}</td>
                             <td>
-                              <button className="btn btn-sm btn-primary" onClick={() => { setViewMovimiento(d); setShowViewMovimiento(true); }}>
+                              <button className="btn btn-sm btn-primary" onClick={() => { setShowDeletedModal(false); setViewMovimiento(d); setShowViewMovimiento(true); }}>
                                 Ver Detalle
                               </button>
                             </td>
@@ -361,69 +418,48 @@ function Efectivo() {
                     <td colSpan="9" className="text-center">No hay movimientos.</td>
                   </tr>
                 )}
-                {(() => {
-                  const filtered = movimientos.filter(m => {
-                    const raw = filtroFecha ?? '';
-                    const f = raw.toString().trim();
-                    // tratar placeholders o textos como vacíos
-                    if (!f || f.toLowerCase().includes('dd') || f.toLowerCase().includes('mm') || f.toLowerCase().includes('aaaa')) return true;
-                    // input date devuelve yyyy-mm-dd; asegurarse de comparar en ISO
-                    // si usuario ingresó en formato dd/mm/yyyy, convertirlo
-                    let want = f;
-                    if (f.includes('/')) {
-                      const parts = f.split('/');
-                      if (parts.length === 3) {
-                        // dd/mm/yyyy -> yyyy-mm-dd
-                        want = `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
-                      }
+                {filteredRows.length === 0 ? (
+                  <tr>
+                    <td colSpan="9" className="text-center">No hay movimientos.</td>
+                  </tr>
+                ) : (
+                  filteredRows.map(({ row: m, detalle, isIngreso, usuarioShow, monto, running }) => {
+                    // resolver usuario si es id
+                    let displayUser = usuarioShow ?? '';
+                    if (displayUser && /^[0-9]+$/.test(displayUser) && usersMap[String(displayUser)]) {
+                      displayUser = usersMap[String(displayUser)];
                     }
-                    return (m.fecha || '').toString().startsWith(want);
-                  });
-                  if (filtered.length === 0) {
+                    if (!displayUser) displayUser = '-';
                     return (
-                      <tr key="none">
-                        <td colSpan="9" className="text-center">No hay movimientos para la fecha seleccionada.</td>
+                      <tr key={m.id}>
+                        <td>{m.fecha}</td>
+                        <td>{detalle}</td>
+                        <td>{isIngreso ? <span className="badge bg-success">Ingreso</span> : <span className="badge bg-danger">Egreso</span>}</td>
+                        <td>{m.categoria ?? ''}</td>
+                        <td>{m.sucursal ?? ''}</td>
+                        <td className={isIngreso ? 'text-success' : 'text-danger'}>{new Intl.NumberFormat('es-CL').format(monto)}</td>
+                        <td className={running >= 0 ? 'text-success' : 'text-danger'}>{new Intl.NumberFormat('es-CL').format(running)}</td>
+                        <td>{displayUser}</td>
+                        <td>
+                          <button className="btn btn-sm btn-primary me-1" onClick={() => handleShow(m)} title="Ver">
+                            <i className="bi bi-eye"></i>
+                          </button>
+                          <button className="btn btn-sm btn-secondary me-1" onClick={() => handleEdit(m)} title="Editar">
+                            <i className="bi bi-pencil"></i>
+                          </button>
+                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(m)} title="Eliminar">
+                            <i className="bi bi-trash"></i>
+                          </button>
+                        </td>
                       </tr>
                     );
-                  }
-
-                  return filtered.map((m) => {
-                  const detalle = m.detalle ?? m.descripcion ?? m.description ?? '';
-                  const tipoRaw = (m.tipo ?? m.tipo_movimiento ?? m.movement_type ?? '').toString();
-                  const tipoNorm = tipoRaw.toLowerCase();
-                  const isIngreso = tipoNorm.includes('ingreso') || tipoRaw.toUpperCase() === 'INGRESO';
-                  const usuarioShow = m.usuario ?? m.user ?? m.origen ?? '';
-                  return (
-                    <tr key={m.id}>
-                      <td>{m.fecha}</td>
-                      <td>{detalle}</td>
-                      <td>{isIngreso ? <span className="badge bg-success">Ingreso</span> : <span className="badge bg-danger">Egreso</span>}</td>
-                      <td>{m.categoria ?? ''}</td>
-                      <td>{m.sucursal ?? ''}</td>
-                      <td className={isIngreso ? 'text-success' : 'text-danger'}>{new Intl.NumberFormat('es-CL').format(m.monto)}</td>
-                      <td>{m.saldo ?? ''}</td>
-                      <td>{usuarioShow}</td>
-                      <td>
-                        <button className="btn btn-sm btn-primary me-1" onClick={() => handleShow(m)} title="Ver">
-                          <i className="bi bi-eye"></i>
-                        </button>
-                        <button className="btn btn-sm btn-secondary me-1" onClick={() => handleEdit(m)} title="Editar">
-                          <i className="bi bi-pencil"></i>
-                        </button>
-                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(m)} title="Eliminar">
-                          <i className="bi bi-trash"></i>
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                  });
-                })()}
+                  })
+                )}
               </tbody>
               <tfoot className="table-light">
                 <tr className="fw-bold">
-                  <td colSpan="5">TOTAL</td>
-                  <td>$300,000</td>
-                  <td>$2,300,000</td>
+                  <td colSpan="6">TOTAL</td>
+                  <td>{new Intl.NumberFormat('es-CL').format(totalAcumulado)}</td>
                   <td colSpan="2"></td>
                 </tr>
               </tfoot>

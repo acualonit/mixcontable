@@ -10,6 +10,7 @@ use App\Http\Controllers\RespaldosController;
 use App\Http\Controllers\SucursalController;
 use App\Http\Controllers\UserManagementController;
 use App\Http\Controllers\EfectivoController;
+use App\Http\Controllers\BancoController;
 use App\Models\User;
 
 /*
@@ -80,6 +81,7 @@ Route::middleware('session')->group(function () {
         Route::post('/empresas/{empresa}/sucursales', [SucursalController::class, 'store']);
         Route::put('/sucursales/{sucursal}', [SucursalController::class, 'update']);
         Route::delete('/sucursales/{sucursal}', [SucursalController::class, 'destroy']);
+        Route::get('/sucursales', [SucursalController::class, 'all']);
 
         // Usuarios
         Route::get('/usuarios', [UserManagementController::class, 'index']);
@@ -110,6 +112,16 @@ Route::middleware('session')->group(function () {
         Route::post('/efectivo', [EfectivoController::class, 'store']);
         Route::put('/efectivo/{id}', [EfectivoController::class, 'update']);
         Route::delete('/efectivo/{id}', [EfectivoController::class, 'destroy']);
+
+        // Banco - cuentas y movimientos bancarios
+        Route::get('/banco/cuentas', [BancoController::class, 'cuentas']);
+        Route::post('/banco/cuentas', [BancoController::class, 'storeCuenta']);
+        Route::get('/banco/saldo', [BancoController::class, 'saldo']);
+        Route::get('/banco/movimientos', [BancoController::class, 'movimientos']);
+        Route::get('/banco/movimientos/eliminados', [BancoController::class, 'eliminados']);
+        Route::post('/banco/movimientos', [BancoController::class, 'storeMovimiento']);
+        Route::put('/banco/movimientos/{id}', [BancoController::class, 'updateMovimiento']);
+        Route::delete('/banco/movimientos/{id}', [BancoController::class, 'destroyMovimiento']);
 
         // Respaldos
         Route::get('/respaldos', [RespaldosController::class, 'index']);

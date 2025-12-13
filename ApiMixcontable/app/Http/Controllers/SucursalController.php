@@ -44,6 +44,14 @@ class SucursalController extends Controller
         return response()->json(['message' => 'Sucursal eliminada']);
     }
 
+    // Listar todas las sucursales (sin filtrar por empresa)
+    public function all()
+    {
+        return response()->json(
+            Sucursal::orderBy('nombre')->get()
+        );
+    }
+
     private function validateSucursal(Request $request): array
     {
         return $request->validate([

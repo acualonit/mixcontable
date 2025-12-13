@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import NuevaCuenta from '../components/banco/NuevaCuenta';
 import NuevoMovimiento from '../components/banco/NuevoMovimiento';
 import DetalleCuenta from '../components/banco/DetalleCuenta';
 import DetalleMovimiento from '../components/banco/DetalleMovimiento';
+import { fetchCuentas, fetchMovimientosBanco, createMovimientoBanco, fetchSaldoBanco, createCuenta, fetchSucursales, deleteMovimientoBanco, updateMovimientoBanco } from '../utils/bancoApi';
+import { exportToExcel, prepareDataForExport, formatDateForExcel } from '../utils/exportUtils';
 
 function Banco() {
   const [cuentaSeleccionada, setCuentaSeleccionada] = useState('');
@@ -17,43 +19,151 @@ function Banco() {
     tipo: ''
   });
 
-  // Datos de ejemplo para las cuentas
-  const [cuentas] = useState([
-    {
-      id: 1,
-      banco: 'Banco Estado',
-      numeroCuenta: '123456789',
-      saldoActual: 5000000
-    }
-  ]);
+  const [cuentas, setCuentas] = useState([]);
+  const [movimientos, setMovimientos] = useState([]);
+  const [editMovimiento, setEditMovimiento] = useState(null);
+  const [saldoActual, setSaldoActual] = useState(0);
+  const [sucursales, setSucursales] = useState([]);
 
-  // Datos de ejemplo para los movimientos
-  const [movimientos] = useState([
-    {
-      id: 1,
-      fecha: '2023-12-01',
-      tipo: 'ingreso',
-      categoria: 'Transferencia',
-      descripcion: 'Pago Cliente A',
-      cuentaBancaria: 'Banco Estado - 123456789',
-      partida: 'Venta',
-      sucursal: 'Central',
-      valor: 1500000,
-      saldo: 5000000,
-      referencia: 'TR-001',
-      usuario: 'Juan Pérez',
-      observaciones: 'Pago factura #1234'
-    }
-  ]);
+  const getCuentaDisplay = (cuenta) => {
+    if (!cuenta) return '';
+    const banco = cuenta.banco ?? cuenta.nombre ?? cuenta.name ?? '';
+    const numero = cuenta.numero_cuenta ?? cuenta.numeroCuenta ?? cuenta.numero ?? cuenta.account_number ?? cuenta.numeroCuentaString ?? '';
+    if (banco && numero) return `${banco} - ${numero}`;
+    if (numero) return numero;
+    if (banco) return banco;
+    return String(cuenta.id ?? '');
+  };
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const res = await fetchCuentas();
+        const c = res?.data || [];
+        setCuentas(c);
+        // por defecto mostrar "Todas las cuentas" (valor vacío)
+        setCuentaSeleccionada((prev) => (prev === '' || prev == null ? '' : prev));
+        // cargar sucursales
+        try {
+          const sres = await fetchSucursales();
+          setSucursales(sres || sres?.data || []);
+        } catch (se) {
+          console.warn('No se pudieron cargar sucursales', se);
+        }
+      } catch (err) {
+        console.error('Error cargando cuentas:', err);
+      }
+    };
+    load();
+  }, []);
+
+  useEffect(() => {
+    const loadMov = async () => {
+      try {
+        const mv = await fetchMovimientosBanco(cuentaSeleccionada);
+        setMovimientos(mv?.data || []);
+        const s = await fetchSaldoBanco(cuentaSeleccionada);
+        setSaldoActual(s?.saldo ?? 0);
+      } catch (err) {
+        console.error('Error cargando movimientos/saldo:', err);
+      }
+    };
+    loadMov();
+  }, [cuentaSeleccionada]);
+
+  // calcular saldos por fila: partiendo del saldoActual y restando/agregando cada movimiento (lista ordenada desc)
+  const enrichedMovimientos = React.useMemo(() => {
+    let running = Number(saldoActual || 0);
+    return (movimientos || []).map(m => {
+      const tipoRaw = m.tipo ?? m.tipo_movimiento ?? m.movement_type ?? '';
+      const tipoLower = String(tipoRaw).toLowerCase();
+      const isIngreso = tipoLower.includes('cred') || tipoLower.includes('ingreso');
+      const valor = Number(m.monto ?? m.valor ?? m.amount ?? 0);
+      const rowSaldo = running;
+      // después de mostrar este movimiento, actualizar running hacia movimientos siguientes (más antiguos)
+      running = isIngreso ? running - valor : running + valor;
+      return { ...m, __valor: valor, __isIngreso: isIngreso, __rowSaldo: rowSaldo };
+    });
+  }, [movimientos, saldoActual]);
+
+  // aplicar filtros cliente sobre enrichedMovimientos
+  const filteredMovimientos = React.useMemo(() => {
+    if (!enrichedMovimientos) return [];
+    return enrichedMovimientos.filter(m => {
+      // fecha exacta
+      if (filtros.fecha) {
+        const f = filtros.fecha;
+        const mvDate = (m.fecha ?? m.date ?? '').slice(0,10);
+        if (mvDate !== f) return false;
+      }
+      // categoria (substring, case-insensitive)
+      if (filtros.categoria) {
+        const cat = String(m.categoria ?? m.descripcion ?? '').toLowerCase();
+        const want = String(filtros.categoria).toLowerCase();
+        if (!cat.includes(want)) return false;
+      }
+      // tipo (ingreso/egreso)
+      if (filtros.tipo) {
+        const tipoRaw = String(m.tipo ?? m.tipo_movimiento ?? m.movement_type ?? '').toLowerCase();
+        const wantTipo = String(filtros.tipo).toLowerCase();
+        if (wantTipo === 'ingreso') {
+          if (!(tipoRaw.includes('ing') || tipoRaw.includes('cred'))) return false;
+        } else if (wantTipo === 'egreso') {
+          if (!(tipoRaw.includes('egre') || tipoRaw.includes('debit'))) return false;
+        }
+      }
+      return true;
+    });
+  }, [enrichedMovimientos, filtros]);
 
   const handleVerDetalleMovimiento = (movimiento) => {
-    setMovimientoSeleccionado(movimiento);
+    // preferir la versión enriquecida (con __rowSaldo y campos de cuenta)
+    const enriched = enrichedMovimientos.find(m => m.id === movimiento.id) || movimiento;
+    setMovimientoSeleccionado(enriched);
     setShowDetalleMovimiento(true);
   };
 
   const handleExportarExcel = () => {
-    // Aquí irá la lógica para exportar a Excel
-    console.log('Exportando a Excel...');
+    // Preparar filas en el mismo orden de columnas que se muestran en la UI
+    try {
+      const rows = (filteredMovimientos || []).map(r => {
+        const cuenta = r.cuenta_banco ? `${r.cuenta_banco} - ${r.cuenta_numero}` : (r.cuenta_bancaria ?? r.cuentaBancaria ?? '');
+        const sucursal = r.cuenta_sucursal_nombre ?? r.sucursal ?? '';
+        return {
+          Fecha: formatDateForExcel(r.fecha ?? r.date ?? ''),
+          Categoria: r.categoria ?? r.descripcion ?? '',
+          Cuenta: cuenta,
+          Partida: r.partida ?? '',
+          Sucursal: sucursal,
+          Tipo: String(r.tipo ?? r.tipo_movimiento ?? r.movement_type ?? ''),
+          Valor: Number(r.__valor ?? r.monto ?? r.valor ?? r.amount ?? 0),
+          Saldo: Number(r.__rowSaldo ?? r.saldo ?? 0),
+          Referencia: r.referencia ?? '',
+          Observaciones: r.observaciones ?? '',
+          Descripcion: r.descripcion ?? '',
+          Usuario: r.usuario_nombre ?? r.usuario ?? ''
+        };
+      });
+
+      const prepared = prepareDataForExport(rows, { formatDates: false, formatNumbers: true });
+      exportToExcel(prepared, `Banco_Movimientos_${new Date().toISOString().slice(0,10)}`);
+    } catch (err) {
+      console.error('Error exportando a Excel', err);
+      alert('Error exportando a Excel');
+    }
+  };
+
+  const handleClearFilters = async () => {
+    setFiltros({ fecha: '', categoria: '', tipo: '' });
+    // refrescar movimientos desde backend para evitar estados inconsistentes
+    try {
+      const mv = await fetchMovimientosBanco(cuentaSeleccionada);
+      setMovimientos(mv?.data || []);
+      const s = await fetchSaldoBanco(cuentaSeleccionada);
+      setSaldoActual(s?.saldo ?? 0);
+    } catch (err) {
+      console.error('Error refrescando movimientos al limpiar filtros:', err);
+    }
   };
 
   return (
@@ -75,13 +185,6 @@ function Banco() {
             <i className="bi bi-plus-circle me-2"></i>
             Nuevo Movimiento
           </button>
-          <button 
-            className="btn btn-light"
-            onClick={handleExportarExcel}
-          >
-            <i className="bi bi-file-earmark-excel me-2"></i>
-            Descargar Excel
-          </button>
         </div>
       </div>
       
@@ -91,12 +194,12 @@ function Banco() {
           <select 
             className="form-select"
             value={cuentaSeleccionada}
-            onChange={(e) => setCuentaSeleccionada(e.target.value)}
+            onChange={(e) => setCuentaSeleccionada(Number(e.target.value))}
           >
-            <option value="">Seleccionar cuenta</option>
+              <option value="">Todas las cuentas</option>
             {cuentas.map(cuenta => (
               <option key={cuenta.id} value={cuenta.id}>
-                {cuenta.banco} - {cuenta.numeroCuenta}
+                {getCuentaDisplay(cuenta)}
               </option>
             ))}
           </select>
@@ -104,11 +207,11 @@ function Banco() {
       </div>
 
       <div className="row mb-4">
-        <div className="col-md-4">
+          <div className="col-md-4">
           <div className="card bg-info text-white">
             <div className="card-body">
               <h5 className="card-title">Saldo Actual</h5>
-              <h3>${cuentas[0]?.saldoActual.toLocaleString()}</h3>
+              <h3>{new Intl.NumberFormat('es-CL').format(saldoActual)}</h3>
             </div>
           </div>
         </div>
@@ -156,6 +259,14 @@ function Banco() {
               </select>
             </div>
           </div>
+          <div className="d-flex justify-content-end mt-3">
+            <button className="btn btn-outline-secondary me-2" onClick={handleClearFilters}>
+              Limpiar filtros
+            </button>
+            <button className="btn btn-outline-success" onClick={handleExportarExcel}>
+              Exportar (CSV)
+            </button>
+          </div>
         </div>
       </div>
 
@@ -180,32 +291,64 @@ function Banco() {
                 </tr>
               </thead>
               <tbody>
-                {movimientos.map((movimiento) => (
-                  <tr key={movimiento.id}>
-                    <td>{movimiento.fecha}</td>
-                    <td>{movimiento.categoria}</td>
-                    <td>{movimiento.cuentaBancaria}</td>
-                    <td>{movimiento.partida}</td>
-                    <td>{movimiento.sucursal}</td>
-                    <td>
-                      <span className={`badge bg-${movimiento.tipo === 'ingreso' ? 'success' : 'danger'}`}>
-                        {movimiento.tipo.charAt(0).toUpperCase() + movimiento.tipo.slice(1)}
-                      </span>
-                    </td>
-                    <td className={movimiento.tipo === 'ingreso' ? 'text-success' : 'text-danger'}>
-                      ${movimiento.valor.toLocaleString()}
-                    </td>
-                    <td>${movimiento.saldo.toLocaleString()}</td>
-                    <td>
-                      <button 
-                        className="btn btn-sm btn-primary"
-                        onClick={() => handleVerDetalleMovimiento(movimiento)}
-                      >
-                        <i className="bi bi-eye"></i>
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {filteredMovimientos.map((movimiento) => {
+                  const tipoLabel = String(movimiento.tipo ?? movimiento.tipo_movimiento ?? movimiento.movement_type ?? '').toUpperCase();
+                  const valor = movimiento.__valor ?? Number(movimiento.monto ?? movimiento.valor ?? movimiento.amount ?? 0);
+                  const saldo = movimiento.__rowSaldo ?? 0;
+                  const isIngreso = movimiento.__isIngreso;
+                  const cuentaNombre = movimiento.cuenta_banco ? `${movimiento.cuenta_banco} - ${movimiento.cuenta_numero}` : (movimiento.cuenta_bancaria ?? movimiento.cuentaBancaria ?? '');
+                  const sucursal = movimiento.cuenta_sucursal_nombre ?? movimiento.sucursal ?? movimiento.cuenta_sucursal ?? '';
+                  return (
+                    <tr key={movimiento.id}>
+                      <td>{movimiento.fecha}</td>
+                      <td>{movimiento.categoria ?? movimiento.descripcion ?? ''}</td>
+                      <td>{cuentaNombre}</td>
+                      <td>{movimiento.partida ?? ''}</td>
+                      <td>{sucursal}</td>
+                      <td>
+                        <span className={`badge bg-${isIngreso ? 'success' : 'danger'}`}>
+                          {tipoLabel}
+                        </span>
+                      </td>
+                      <td className={isIngreso ? 'text-success' : 'text-danger'}>
+                        {new Intl.NumberFormat('es-CL').format(valor)}
+                      </td>
+                      <td>{new Intl.NumberFormat('es-CL').format(saldo)}</td>
+                      <td className="d-flex gap-1">
+                        <button 
+                          className="btn btn-sm btn-primary"
+                          onClick={() => handleVerDetalleMovimiento(movimiento)}
+                        >
+                          <i className="bi bi-eye"></i>
+                        </button>
+                        <button
+                          className="btn btn-sm btn-warning"
+                          onClick={() => { setEditMovimiento(movimiento); setShowNuevoMovimiento(true); }}
+                        >
+                          <i className="bi bi-pencil"></i>
+                        </button>
+                        <button
+                          className="btn btn-sm btn-danger"
+                          onClick={async () => {
+                            if (!confirm('Confirma eliminar este movimiento?')) return;
+                            try {
+                              await deleteMovimientoBanco(movimiento.id);
+                              // refrescar lista y saldo
+                              const mv = await fetchMovimientosBanco(cuentaSeleccionada);
+                              setMovimientos(mv?.data || []);
+                              const s = await fetchSaldoBanco(cuentaSeleccionada);
+                              setSaldoActual(s?.saldo ?? 0);
+                            } catch (err) {
+                              console.error('Error eliminando movimiento:', err);
+                            }
+                          }}
+                        >
+                          <i className="bi bi-trash"></i>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -214,9 +357,27 @@ function Banco() {
 
       {showNuevaCuenta && (
         <NuevaCuenta 
+          sucursales={sucursales}
           onClose={() => setShowNuevaCuenta(false)}
-          onSave={(data) => {
-            console.log('Nueva cuenta:', data);
+          onSave={async (data) => {
+            try {
+              const payload = {
+                banco: data.banco,
+                tipo_cuenta: data.tipoCuenta,
+                numero_cuenta: data.numeroCuenta,
+                id_sucursal: Number(data.sucursal),
+                saldo_inicial: data.saldoInicial,
+                observaciones: data.observaciones
+              };
+              await createCuenta(payload);
+              // refrescar cuentas y seleccionar la creada (si la API devuelve la nueva cuenta, mejor)
+              const res = await fetchCuentas();
+              const c = res?.data || [];
+              setCuentas(c);
+              if (c.length > 0) setCuentaSeleccionada(c[0].id);
+            } catch (err) {
+              console.error('Error creando cuenta:', err);
+            }
             setShowNuevaCuenta(false);
           }}
         />
@@ -225,10 +386,48 @@ function Banco() {
       {showNuevoMovimiento && (
         <NuevoMovimiento 
           cuentas={cuentas}
-          onClose={() => setShowNuevoMovimiento(false)}
-          onSave={(data) => {
-            console.log('Nuevo movimiento:', data);
+          initialData={editMovimiento}
+          onClose={() => { setShowNuevoMovimiento(false); setEditMovimiento(null); }}
+          onSave={async (data) => {
+            try {
+              const payload = {
+                fecha: data.fecha,
+                descripcion: data.descripcion,
+                tipo: data.tipo,
+                monto: Number(data.monto ?? data.valor ?? 0),
+                categoria: data.categoria,
+                cuenta_id: Number(data.cuenta || cuentaSeleccionada || (cuentas[0]?.id)),
+                referencia: data.referencia,
+                sucursal: data.sucursal,
+                observaciones: data.observaciones
+              };
+              if (editMovimiento && editMovimiento.id) {
+                // actualizar: llamamos al endpoint y luego refrescamos lista completa para mantener saldos consistentes
+                try {
+                  await updateMovimientoBanco(editMovimiento.id, payload);
+                } catch (err) {
+                  console.error('Error actualizando movimiento:', err);
+                  throw err;
+                }
+                const mv = await fetchMovimientosBanco(cuentaSeleccionada || (cuentas[0]?.id));
+                setMovimientos(mv?.data || []);
+              } else {
+                const createdRes = await createMovimientoBanco(payload);
+                const created = createdRes?.data ?? null;
+                if (created) {
+                  setMovimientos(prev => [created, ...prev]);
+                } else {
+                  const mv = await fetchMovimientosBanco(cuentaSeleccionada || (cuentas[0]?.id));
+                  setMovimientos(mv?.data || []);
+                }
+              }
+              const s = await fetchSaldoBanco(cuentaSeleccionada || (cuentas[0]?.id));
+              setSaldoActual(s?.saldo ?? 0);
+            } catch (err) {
+              console.error('Error creando/actualizando movimiento banco:', err);
+            }
             setShowNuevoMovimiento(false);
+            setEditMovimiento(null);
           }}
         />
       )}

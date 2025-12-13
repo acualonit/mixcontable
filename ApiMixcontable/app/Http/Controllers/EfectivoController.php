@@ -39,7 +39,7 @@ class EfectivoController extends Controller
 
         $query = DB::table('movimientos_caja')->selectRaw($sql);
         if (in_array('deleted_at', $cols)) {
-            $query->whereNull('deleted_at');
+            $query->whereNull('movimientos_caja.deleted_at');
         }
 
         $saldo = $query->value('saldo');
@@ -66,14 +66,31 @@ class EfectivoController extends Controller
 
         $dateCol = $pick(['fecha', 'date', 'fecha_mov', 'created_at']);
 
-        $query = DB::table('movimientos_caja');
+            $query = DB::table('movimientos_caja');
         if (in_array('deleted_at', $cols)) {
-            $query->whereNull('deleted_at');
+                $query->whereNull('movimientos_caja.deleted_at');
         }
-        if ($dateCol) {
-            $query->orderBy($dateCol, 'desc');
-        } else if (in_array('id', $cols)) {
-            $query->orderBy('id', 'desc');
+            if ($dateCol) {
+                $query->orderBy('movimientos_caja.'.$dateCol, 'desc');
+            } else if (in_array('id', $cols)) {
+                $query->orderBy('movimientos_caja.id', 'desc');
+        }
+
+        // incluir nombre de usuario si existe tabla users (construir COALESCE solo con columnas existentes)
+        $userCols = Schema::hasTable('users') ? Schema::getColumnListing('users') : [];
+        if (!empty($userCols)) {
+            $candidates = [];
+            foreach (['name', 'nombre', 'nombre_completo', 'email'] as $uc) {
+                if (in_array($uc, $userCols)) $candidates[] = "users.$uc";
+            }
+            $selectUserExpr = "'' as usuario_nombre";
+            if (!empty($candidates)) {
+                $selectUserExpr = 'COALESCE(' . implode(', ', $candidates) . ') as usuario_nombre';
+            }
+            $query->leftJoin('users', 'movimientos_caja.user_id', '=', 'users.id')
+                  ->select('movimientos_caja.*', DB::raw($selectUserExpr));
+        } else {
+            $query->select('movimientos_caja.*');
         }
 
         $movimientos = $query->get();
@@ -103,13 +120,30 @@ class EfectivoController extends Controller
 
         $query = DB::table('movimientos_caja');
         if ($deletedCol) {
-            $query->whereNotNull($deletedCol);
+            $query->whereNotNull('movimientos_caja.'.$deletedCol);
         } else {
             // si no hay columna deleted_at, devolver vacío
             return response()->json(['data' => []]);
         }
 
-        if ($dateCol) $query->orderBy($dateCol, 'desc');
+        if ($dateCol) $query->orderBy('movimientos_caja.'.$dateCol, 'desc');
+
+        // incluir nombre de usuario si existe tabla users (construir COALESCE solo con columnas existentes)
+        $userCols = Schema::hasTable('users') ? Schema::getColumnListing('users') : [];
+        if (!empty($userCols)) {
+            $candidates = [];
+            foreach (['name', 'nombre', 'nombre_completo', 'email'] as $uc) {
+                if (in_array($uc, $userCols)) $candidates[] = "users.$uc";
+            }
+            $selectUserExpr = "'' as usuario_nombre";
+            if (!empty($candidates)) {
+                $selectUserExpr = 'COALESCE(' . implode(', ', $candidates) . ') as usuario_nombre';
+            }
+            $query->leftJoin('users', 'movimientos_caja.user_id', '=', 'users.id')
+                  ->select('movimientos_caja.*', DB::raw($selectUserExpr));
+        } else {
+            $query->select('movimientos_caja.*');
+        }
 
         $rows = $query->get();
         return response()->json(['data' => $rows]);
@@ -125,7 +159,7 @@ class EfectivoController extends Controller
             'monto' => ['required', 'numeric'],
             'categoria' => ['nullable', 'string'],
             'sucursal' => ['nullable'],
-            'usuario' => ['nullable']
+            'usuario' => ['nullable', 'integer']
         ]);
 
         // Obtener columnas reales de la tabla para mapear campos
@@ -151,14 +185,29 @@ class EfectivoController extends Controller
             'monto' => $pick(['monto', 'valor', 'importe', 'amount']),
             'categoria' => $pick(['categoria', 'category']),
             'sucursal' => $pick(['sucursal', 'branch', 'sucursal_id']),
-            'usuario' => $pick(['usuario', 'user', 'usuario_id']),
+            'usuario' => $pick(['usuario', 'user', 'usuario_id', 'user_id']),
             'caja_id' => $pick(['caja_id', 'caja', 'cashbox', 'cajaId'])
         ];
 
         $insert = [];
+        // Determinar user_id: preferir usuario autenticado, si existe
+        $authenticatedUserId = null;
+        try {
+            $u = $request->user();
+            if ($u && isset($u->id)) $authenticatedUserId = $u->id;
+        } catch (\Throwable $e) {
+            $authenticatedUserId = null;
+        }
+
         foreach ($mapping as $key => $col) {
             if ($col) {
-                $value = $data[$key] ?? null;
+                $value = null;
+                if ($key === 'usuario') {
+                    // si existe usuario autenticado, usarlo; sino usar valor del payload
+                    $value = $authenticatedUserId ?? ($data['usuario'] ?? null);
+                } else {
+                    $value = $data[$key] ?? null;
+                }
                 // convertir monto a float si aplica
                 if ($key === 'monto' && $value !== null) $value = (float)$value;
                 $insert[$col] = $value;
@@ -207,14 +256,30 @@ class EfectivoController extends Controller
 
         // Recuperar el registro insertado por created_at si existe, si no tomar último registro
         if (in_array('created_at', $cols)) {
-            $q = DB::table('movimientos_caja')->orderBy('created_at', 'desc');
-            if (in_array('deleted_at', $cols)) $q->whereNull('deleted_at');
-            $mov = $q->first();
+            $q = DB::table('movimientos_caja')->orderBy('movimientos_caja.created_at', 'desc');
         } else {
-            $q = DB::table('movimientos_caja')->orderBy('id', 'desc');
-            if (in_array('deleted_at', $cols)) $q->whereNull('deleted_at');
-            $mov = $q->first();
+            $q = DB::table('movimientos_caja')->orderBy('movimientos_caja.id', 'desc');
         }
+        if (in_array('deleted_at', $cols)) $q->whereNull('movimientos_caja.deleted_at');
+
+        // incluir nombre de usuario si existe tabla users (construir COALESCE solo con columnas existentes)
+        $userCols = Schema::hasTable('users') ? Schema::getColumnListing('users') : [];
+        if (!empty($userCols)) {
+            $candidates = [];
+            foreach (['name', 'nombre', 'nombre_completo', 'email'] as $uc) {
+                if (in_array($uc, $userCols)) $candidates[] = "users.$uc";
+            }
+            $selectUserExpr = "'' as usuario_nombre";
+            if (!empty($candidates)) {
+                $selectUserExpr = 'COALESCE(' . implode(', ', $candidates) . ') as usuario_nombre';
+            }
+            $q->leftJoin('users', 'movimientos_caja.user_id', '=', 'users.id')
+              ->select('movimientos_caja.*', DB::raw($selectUserExpr));
+        } else {
+            $q->select('movimientos_caja.*');
+        }
+
+        $mov = $q->first();
 
         return response()->json(['data' => $mov], 201);
     }
@@ -299,7 +364,26 @@ class EfectivoController extends Controller
             }
         }
 
-        $mov = DB::table('movimientos_caja')->where('id', $id)->first();
+        // intentar devolver también nombre de usuario si existe tabla users
+        $userCols = Schema::hasTable('users') ? Schema::getColumnListing('users') : [];
+        if (!empty($userCols)) {
+            $candidates = [];
+            foreach (['name', 'nombre', 'nombre_completo', 'email'] as $uc) {
+                if (in_array($uc, $userCols)) $candidates[] = "users.$uc";
+            }
+            $selectUserExpr = "'' as usuario_nombre";
+            if (!empty($candidates)) {
+                $selectUserExpr = 'COALESCE(' . implode(', ', $candidates) . ') as usuario_nombre';
+            }
+            $mov = DB::table('movimientos_caja')
+                ->leftJoin('users', 'movimientos_caja.user_id', '=', 'users.id')
+                ->where('movimientos_caja.id', $id)
+                ->select('movimientos_caja.*', DB::raw($selectUserExpr))
+                ->first();
+        } else {
+            $mov = DB::table('movimientos_caja')->where('id', $id)->first();
+        }
+
         return response()->json(['data' => $mov]);
     }
 

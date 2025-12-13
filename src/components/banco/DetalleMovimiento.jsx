@@ -1,6 +1,17 @@
 import React from 'react';
 
 function DetalleMovimiento({ movimiento, onClose }) {
+  if (!movimiento) return null;
+  const fecha = movimiento.fecha ?? movimiento.date ?? movimiento.created_at ?? '';
+  const tipoRaw = movimiento.tipo ?? movimiento.tipo_movimiento ?? movimiento.movement_type ?? '';
+  const tipoLower = String(tipoRaw).toLowerCase();
+  const isIngreso = tipoLower.includes('cred') || tipoLower.includes('ingreso');
+  const categoria = movimiento.categoria ?? movimiento.descripcion ?? '';
+  const cuentaNombre = movimiento.cuenta_banco ? `${movimiento.cuenta_banco} - ${movimiento.cuenta_numero}` : (movimiento.cuentaBancaria ?? movimiento.cuenta_bancaria ?? movimiento.cuenta ?? '');
+  const sucursal = movimiento.cuenta_sucursal_nombre ?? movimiento.sucursal ?? '';
+  const valor = movimiento.__valor ?? Number(movimiento.monto ?? movimiento.valor ?? movimiento.amount ?? 0);
+  const saldo = movimiento.__rowSaldo ?? movimiento.saldo ?? 0;
+
   return (
     <div className="modal d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
       <div className="modal-dialog">
@@ -17,23 +28,23 @@ function DetalleMovimiento({ movimiento, onClose }) {
                   <tbody>
                     <tr>
                       <th>Fecha:</th>
-                      <td>{movimiento.fecha}</td>
+                      <td>{fecha}</td>
                     </tr>
                     <tr>
                       <th>Tipo:</th>
                       <td>
-                        <span className={`badge bg-${movimiento.tipo === 'ingreso' ? 'success' : 'danger'}`}>
-                          {movimiento.tipo.charAt(0).toUpperCase() + movimiento.tipo.slice(1)}
+                        <span className={`badge bg-${isIngreso ? 'success' : 'danger'}`}>
+                          {String(tipoRaw).toUpperCase()}
                         </span>
                       </td>
                     </tr>
                     <tr>
                       <th>Categoría:</th>
-                      <td>{movimiento.categoria}</td>
+                      <td>{categoria}</td>
                     </tr>
                     <tr>
                       <th>Partida:</th>
-                      <td>{movimiento.partida}</td>
+                      <td>{movimiento.partida ?? ''}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -44,21 +55,21 @@ function DetalleMovimiento({ movimiento, onClose }) {
                   <tbody>
                     <tr>
                       <th>Cuenta:</th>
-                      <td>{movimiento.cuentaBancaria}</td>
+                      <td>{cuentaNombre}</td>
                     </tr>
                     <tr>
                       <th>Sucursal:</th>
-                      <td>{movimiento.sucursal}</td>
+                      <td>{sucursal}</td>
                     </tr>
                     <tr>
                       <th>Valor:</th>
-                      <td className={`fw-bold ${movimiento.tipo === 'ingreso' ? 'text-success' : 'text-danger'}`}>
-                        ${movimiento.valor.toLocaleString()}
+                      <td className={`fw-bold ${isIngreso ? 'text-success' : 'text-danger'}`}>
+                        ${valor.toLocaleString()}
                       </td>
                     </tr>
                     <tr>
                       <th>Saldo:</th>
-                      <td className="fw-bold">${movimiento.saldo.toLocaleString()}</td>
+                      <td className="fw-bold">${Number(saldo).toLocaleString()}</td>
                     </tr>
                   </tbody>
                 </table>

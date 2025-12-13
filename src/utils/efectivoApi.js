@@ -33,3 +33,4 @@ export const createMovimiento = (payload) => request('/efectivo', { method: 'POS
 export const updateMovimiento = (id, payload) => request(`/efectivo/${id}`, { method: 'PUT', body: payload });
 export const deleteMovimiento = (id) => request(`/efectivo/${id}`, { method: 'DELETE' });
 export const fetchDeletedMovimientos = () => request('/efectivo/eliminados');
+export const fetchUsuarios = () => request('/usuarios');
