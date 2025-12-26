@@ -1,6 +1,16 @@
 import React from 'react';
 
-function DetalleCheque({ cheque, onClose }) {
+function DetalleCheque({ cheque = {}, onClose }) {
+  const numero = cheque.numero ?? cheque.numero_cheque ?? '';
+  const tipo = cheque.tipo ?? (cheque.estado === 'EMITIDO' ? 'emitido' : 'emitido');
+  const banco = cheque.banco ?? cheque.cuenta_banco ?? '';
+  const cuentaNumero = cheque.cuenta_numero ?? cheque.numero_cuenta ?? '';
+  const estadoRaw = cheque.estado ?? '';
+  const estado = String(estadoRaw).toLowerCase();
+  const fechaEm = cheque.fechaEmision ?? cheque.fecha_emision ?? '';
+  const fechaCob = cheque.fechaCobro ?? cheque.fecha_cobro ?? cheque.fecha_cobro ?? '';
+  const montoVal = cheque.monto != null ? Number(cheque.monto) : 0;
+
   return (
     <div className="modal d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
       <div className="modal-dialog">
@@ -17,26 +27,27 @@ function DetalleCheque({ cheque, onClose }) {
                   <tbody>
                     <tr>
                       <th>N° Cheque:</th>
-                      <td>{cheque.numero}</td>
+                      <td>{numero}</td>
                     </tr>
                     <tr>
                       <th>Tipo:</th>
-                      <td>{cheque.tipo.charAt(0).toUpperCase() + cheque.tipo.slice(1)}</td>
+                      <td>{typeof tipo === 'string' ? tipo.charAt(0).toUpperCase() + tipo.slice(1) : tipo}</td>
                     </tr>
                     <tr>
                       <th>Banco:</th>
-                      <td>{cheque.banco}</td>
+                      <td>{banco ? `${banco}${cuentaNumero ? ' - ' + cuentaNumero : ''}` : ''}</td>
                     </tr>
                     <tr>
                       <th>Estado:</th>
                       <td>
                         <span className={`badge bg-${
-                          cheque.estado === 'pendiente' ? 'warning' :
-                          cheque.estado === 'cobrado' ? 'success' :
-                          cheque.estado === 'protestado' ? 'danger' :
+                          estado === 'pendiente' ? 'warning' :
+                          estado === 'cobrado' || estado === 'COBRADO' ? 'success' :
+                          estado === 'anulado' || estado === 'ANULADO' ? 'danger' :
+                          estado === 'prestado' ? 'info' :
                           'secondary'
                         }`}>
-                          {cheque.estado.charAt(0).toUpperCase() + cheque.estado.slice(1)}
+                          {String(estadoRaw).charAt(0).toUpperCase() + String(estadoRaw).slice(1)}
                         </span>
                       </td>
                     </tr>
@@ -49,15 +60,15 @@ function DetalleCheque({ cheque, onClose }) {
                   <tbody>
                     <tr>
                       <th>Fecha Emisión:</th>
-                      <td>{cheque.fechaEmision}</td>
+                      <td>{fechaEm}</td>
                     </tr>
                     <tr>
                       <th>Fecha Cobro:</th>
-                      <td>{cheque.fechaCobro}</td>
+                      <td>{fechaCob}</td>
                     </tr>
                     <tr>
                       <th>Monto:</th>
-                      <td className="fw-bold">${cheque.monto.toLocaleString()}</td>
+                      <td className="fw-bold">${montoVal.toLocaleString()}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -78,10 +89,10 @@ function DetalleCheque({ cheque, onClose }) {
                   </thead>
                   <tbody>
                     <tr>
-                      <td>{cheque.fechaEmision}</td>
-                      <td>Emitido</td>
-                      <td>Juan Pérez</td>
-                      <td>Emisión inicial</td>
+                      <td>{fechaEm}</td>
+                      <td>{estadoRaw ?? 'Emitido'}</td>
+                      <td>{cheque.usuario ?? 'Juan Pérez'}</td>
+                      <td>{cheque.observaciones ?? cheque.observacion ?? ''}</td>
                     </tr>
                   </tbody>
                 </table>

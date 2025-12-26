@@ -20,15 +20,25 @@ async function doFetch(url, body) {
 }
 
 export async function login(email, password) {
-	// Forzar uso de la URL absoluta del backend para evitar depender del proxy Vite
+	// Intentar primero rutas relativas para aprovechar el proxy de Vite
+	// (evita problemas CORS y URL absolutas durante el desarrollo).
 	try {
-		return await doFetch(`${FALLBACK_API}/login`, { email, password });
+		return await doFetch(`/api/login`, { email, password });
 	} catch (err) {
-		// Si falla, intentar la ruta de desarrollo (no requiere cookies)
+		// Si falla, intentar ruta relativa alternativa
 		try {
-			return await doFetch(`${FALLBACK_API}/dev-login`, { email, password });
+			return await doFetch(`/api/dev-login`, { email, password });
 		} catch (err2) {
-			throw err2;
+			// Finalmente usar la URL absoluta de fallback
+			try {
+				return await doFetch(`${FALLBACK_API}/login`, { email, password });
+			} catch (err3) {
+				try {
+					return await doFetch(`${FALLBACK_API}/dev-login`, { email, password });
+				} catch (err4) {
+					throw err4;
+				}
+			}
 		}
 	}
 }

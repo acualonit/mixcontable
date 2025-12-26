@@ -3,7 +3,7 @@ import NuevaCuenta from '../components/banco/NuevaCuenta';
 import NuevoMovimiento from '../components/banco/NuevoMovimiento';
 import DetalleCuenta from '../components/banco/DetalleCuenta';
 import DetalleMovimiento from '../components/banco/DetalleMovimiento';
-import { fetchCuentas, fetchMovimientosBanco, createMovimientoBanco, fetchSaldoBanco, createCuenta, fetchSucursales, deleteMovimientoBanco, updateMovimientoBanco } from '../utils/bancoApi';
+import { fetchCuentas, fetchMovimientosBanco, createMovimientoBanco, fetchSaldoBanco, createCuenta, fetchSucursales, deleteMovimientoBanco, updateMovimientoBanco, fetchDeletedMovimientosBanco } from '../utils/bancoApi';
 import { exportToExcel, prepareDataForExport, formatDateForExcel } from '../utils/exportUtils';
 
 function Banco() {
@@ -24,6 +24,8 @@ function Banco() {
   const [editMovimiento, setEditMovimiento] = useState(null);
   const [saldoActual, setSaldoActual] = useState(0);
   const [sucursales, setSucursales] = useState([]);
+  const [showDeletedModal, setShowDeletedModal] = useState(false);
+  const [deletedMovimientos, setDeletedMovimientos] = useState([]);
 
   const getCuentaDisplay = (cuenta) => {
     if (!cuenta) return '';
@@ -60,9 +62,10 @@ function Banco() {
   useEffect(() => {
     const loadMov = async () => {
       try {
-        const mv = await fetchMovimientosBanco(cuentaSeleccionada);
+        const cuentaId = cuentaSeleccionada ? Number(cuentaSeleccionada) : undefined;
+        const mv = await fetchMovimientosBanco(cuentaId);
         setMovimientos(mv?.data || []);
-        const s = await fetchSaldoBanco(cuentaSeleccionada);
+        const s = await fetchSaldoBanco(cuentaId);
         setSaldoActual(s?.saldo ?? 0);
       } catch (err) {
         console.error('Error cargando movimientos/saldo:', err);
@@ -126,14 +129,13 @@ function Banco() {
   const handleExportarExcel = () => {
     // Preparar filas en el mismo orden de columnas que se muestran en la UI
     try {
-      const rows = (filteredMovimientos || []).map(r => {
+        const rows = (filteredMovimientos || []).map(r => {
         const cuenta = r.cuenta_banco ? `${r.cuenta_banco} - ${r.cuenta_numero}` : (r.cuenta_bancaria ?? r.cuentaBancaria ?? '');
         const sucursal = r.cuenta_sucursal_nombre ?? r.sucursal ?? '';
         return {
           Fecha: formatDateForExcel(r.fecha ?? r.date ?? ''),
           Categoria: r.categoria ?? r.descripcion ?? '',
           Cuenta: cuenta,
-          Partida: r.partida ?? '',
           Sucursal: sucursal,
           Tipo: String(r.tipo ?? r.tipo_movimiento ?? r.movement_type ?? ''),
           Valor: Number(r.__valor ?? r.monto ?? r.valor ?? r.amount ?? 0),
@@ -172,6 +174,21 @@ function Banco() {
         <h2>Banco</h2>
         <div className="d-flex gap-2">
           <button 
+            className="btn btn-outline-secondary btn-sm me-2"
+            onClick={async () => {
+              setShowDeletedModal(true);
+              try {
+                const res = await fetchDeletedMovimientosBanco();
+                setDeletedMovimientos(res?.data || []);
+              } catch (e) {
+                console.error('Error cargando movimientos eliminados:', e);
+                setDeletedMovimientos([]);
+              }
+            }}
+          >
+            <i className="bi bi-trash2-fill me-1"></i> Ver Eliminados
+          </button>
+          <button 
             className="btn btn-primary"
             onClick={() => setShowNuevaCuenta(true)}
           >
@@ -194,11 +211,11 @@ function Banco() {
           <select 
             className="form-select"
             value={cuentaSeleccionada}
-            onChange={(e) => setCuentaSeleccionada(Number(e.target.value))}
+            onChange={(e) => setCuentaSeleccionada(e.target.value)}
           >
               <option value="">Todas las cuentas</option>
             {cuentas.map(cuenta => (
-              <option key={cuenta.id} value={cuenta.id}>
+              <option key={cuenta.id} value={String(cuenta.id)}>
                 {getCuentaDisplay(cuenta)}
               </option>
             ))}
@@ -278,18 +295,17 @@ function Banco() {
           <div className="table-responsive">
             <table className="table table-hover table-bordered">
               <thead className="table-light">
-                <tr>
-                  <th>Fecha</th>
-                  <th>Categoría</th>
-                  <th>Cuenta Bancaria</th>
-                  <th>Partida</th>
-                  <th>Sucursal</th>
-                  <th>Tipo</th>
-                  <th>Valor</th>
-                  <th>Saldo</th>
-                  <th>Visualizar</th>
-                </tr>
-              </thead>
+                    <tr>
+                      <th>Fecha</th>
+                      <th>Categoría</th>
+                      <th>Cuenta Bancaria</th>
+                      <th>Sucursal</th>
+                      <th>Tipo</th>
+                      <th>Valor</th>
+                      <th>Saldo</th>
+                      <th>Visualizar</th>
+                    </tr>
+                  </thead>
               <tbody>
                 {filteredMovimientos.map((movimiento) => {
                   const tipoLabel = String(movimiento.tipo ?? movimiento.tipo_movimiento ?? movimiento.movement_type ?? '').toUpperCase();
@@ -303,7 +319,6 @@ function Banco() {
                       <td>{movimiento.fecha}</td>
                       <td>{movimiento.categoria ?? movimiento.descripcion ?? ''}</td>
                       <td>{cuentaNombre}</td>
-                      <td>{movimiento.partida ?? ''}</td>
                       <td>{sucursal}</td>
                       <td>
                         <span className={`badge bg-${isIngreso ? 'success' : 'danger'}`}>
@@ -366,7 +381,7 @@ function Banco() {
                 tipo_cuenta: data.tipoCuenta,
                 numero_cuenta: data.numeroCuenta,
                 id_sucursal: Number(data.sucursal),
-                saldo_inicial: data.saldoInicial,
+                saldo: 0,
                 observaciones: data.observaciones
               };
               await createCuenta(payload);
@@ -381,6 +396,61 @@ function Banco() {
             setShowNuevaCuenta(false);
           }}
         />
+      )}
+
+      {showDeletedModal && (
+        <div className="modal d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="modal-dialog modal-lg">
+            <div className="modal-content">
+              <div className="modal-header bg-dark text-white">
+                <h5 className="modal-title">Movimientos Eliminados</h5>
+                <button type="button" className="btn-close" onClick={() => setShowDeletedModal(false)}></button>
+              </div>
+              <div className="modal-body">
+                <div className="table-responsive">
+                  <table className="table table-sm table-hover">
+                    <thead>
+                      <tr>
+                        <th>Fecha Eliminación</th>
+                        <th>Usuario</th>
+                        <th>Tipo</th>
+                        <th>Valor</th>
+                        <th>Ver Detalle</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {deletedMovimientos.length === 0 && (
+                        <tr><td colSpan="5" className="text-center">No hay movimientos eliminados.</td></tr>
+                      )}
+                      {deletedMovimientos.map(d => {
+                        const usuarioShow = d.usuario_nombre ?? d.usuario ?? d.user ?? d.user_id ?? d.userId ?? d.origen ?? '';
+                        const tipoRaw = (d.tipo ?? d.tipo_movimiento ?? '').toString();
+                        const tipoNorm = tipoRaw.toLowerCase();
+                        const isIngreso = tipoNorm.includes('ingreso') || tipoRaw.toUpperCase() === 'INGRESO';
+                        return (
+                          <tr key={d.id}>
+                            <td>{d.deleted_at ?? ''}</td>
+                            <td>{usuarioShow || '-'}</td>
+                            <td>{isIngreso ? <span className="badge bg-success">Ingreso</span> : <span className="badge bg-danger">Salida</span>}</td>
+                            <td className={isIngreso ? 'text-success' : 'text-danger'}>{new Intl.NumberFormat('es-CL').format(d.monto)}</td>
+                            <td>
+                              <button className="btn btn-sm btn-primary" onClick={() => { setShowDeletedModal(false); setMovimientoSeleccionado(d); setShowDetalleMovimiento(true); }}>
+                                Ver Detalle
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowDeletedModal(false)}>Cerrar</button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {showNuevoMovimiento && (

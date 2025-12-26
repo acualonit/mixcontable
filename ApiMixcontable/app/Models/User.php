@@ -22,6 +22,7 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'id_sucursal',
         'role',
         'status',
     ];
@@ -52,5 +53,10 @@ class User extends Authenticatable
     public function respaldos()
     {
         return $this->hasMany(Respaldo::class, 'usuario_id');
+    }
+
+    public function sucursal()
+    {
+        return $this->belongsTo(Sucursal::class, 'id_sucursal');
     }
 }

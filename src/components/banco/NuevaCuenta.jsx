@@ -6,7 +6,6 @@ function NuevaCuenta({ onClose, onSave, sucursales = [] }) {
     tipoCuenta: '',
     numeroCuenta: '',
     sucursal: '',
-    saldoInicial: 0,
     observaciones: ''
   });
 
@@ -90,16 +89,7 @@ function NuevaCuenta({ onClose, onSave, sucursales = [] }) {
                 </select>
               </div>
 
-              <div className="mb-3">
-                <label className="form-label">Saldo Inicial</label>
-                <input
-                  type="number"
-                  className="form-control"
-                  value={formData.saldoInicial}
-                  onChange={(e) => setFormData({...formData, saldoInicial: parseFloat(e.target.value)})}
-                  required
-                />
-              </div>
+              {/* Campo de saldo inicial removido: el backend gestionará el saldo inicial */}
 
               <div className="mb-3">
                 <label className="form-label">Observaciones</label>

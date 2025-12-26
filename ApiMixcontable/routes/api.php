@@ -8,6 +8,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\EmpresaController;
 use App\Http\Controllers\RespaldosController;
 use App\Http\Controllers\SucursalController;
+use App\Http\Controllers\VentasController;
 use App\Http\Controllers\UserManagementController;
 use App\Http\Controllers\EfectivoController;
 use App\Http\Controllers\BancoController;
@@ -21,6 +22,22 @@ use App\Models\User;
 | Aquí se registran las rutas de la API para MIXCONTABLE.
 |
 */
+
+// Ruta pública para listar sucursales en entorno local (útil para frontend sin sesión)
+// Ruta pública (sin autenticación) para listar sucursales. Útil para el frontend.
+// En producción podrías eliminarla o protegerla con middleware.
+Route::get('/sucursales', [SucursalController::class, 'all']);
+
+// Endpoint público dedicado para debug de frontend (evita conflictos con rutas protegidas)
+Route::get('/public/sucursales', [SucursalController::class, 'all']);
+
+// Debug: últimas entradas de métodos de pago (solo funciona si el controlador permite mostrar en local)
+Route::get('/debug/venta-metodos', [VentasController::class, 'debugMetodos']);
+
+// Ruta pública para listar sucursales en entorno local (útil para frontend sin sesión)
+if (env('APP_ENV') === 'local' || env('APP_DEBUG')) {
+    Route::get('/sucursales', [SucursalController::class, 'all']);
+}
 
 Route::middleware('session')->group(function () {
     // Login de usuarios
@@ -64,6 +81,17 @@ Route::middleware('session')->group(function () {
             'status' => $user->status,
         ]]);
     });
+
+    // Rutas de ventas accesibles en desarrollo/sin autenticación para facilitar pruebas
+    Route::get('/ventas', [\App\Http\Controllers\VentasController::class, 'index']);
+    Route::get('/ventas/export', [\App\Http\Controllers\VentasController::class, 'export']);
+    Route::post('/ventas', [\App\Http\Controllers\VentasController::class, 'store']);
+    Route::get('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'show']);
+    Route::put('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'update']);
+    Route::delete('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'destroy']);
+
+    // Sucursales públicas en entorno de desarrollo (lista global)
+    Route::get('/sucursales', [SucursalController::class, 'all']);
 
     // Rutas protegidas por sesión (puedes cambiar el middleware a sanctum/jwt luego)
     Route::middleware('auth:web')->group(function () {
@@ -129,5 +157,22 @@ Route::middleware('session')->group(function () {
         Route::post('/respaldos/restaurar', [RespaldosController::class, 'restore']);
         Route::get('/respaldos/{respaldo}/descargar', [RespaldosController::class, 'download']);
         Route::delete('/respaldos/{respaldo}', [RespaldosController::class, 'destroy']);
+
+        // Cheques
+        Route::get('/cheques', [\App\Http\Controllers\ChequeController::class, 'index']);
+        Route::post('/cheques', [\App\Http\Controllers\ChequeController::class, 'store']);
+        Route::get('/cheques/{cheque}', [\App\Http\Controllers\ChequeController::class, 'show']);
+        Route::put('/cheques/{cheque}', [\App\Http\Controllers\ChequeController::class, 'update']);
+        Route::delete('/cheques/{cheque}', [\App\Http\Controllers\ChequeController::class, 'destroy']);
+        Route::post('/cheques/{cheque}/cobrar', [\App\Http\Controllers\ChequeController::class, 'cobrar']);
+        Route::post('/cheques/{id}/restore', [\App\Http\Controllers\ChequeController::class, 'restore']);
+
+        // Ventas (módulo básico - mock en sesión para integración rápida)
+        Route::get('/ventas', [\App\Http\Controllers\VentasController::class, 'index']);
+        Route::get('/ventas/export', [\App\Http\Controllers\VentasController::class, 'export']);
+        Route::post('/ventas', [\App\Http\Controllers\VentasController::class, 'store']);
+        Route::get('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'show']);
+        Route::put('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'update']);
+        Route::delete('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'destroy']);
     });
 });

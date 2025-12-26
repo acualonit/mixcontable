@@ -50,6 +50,27 @@ export const saveEmpresa = (empresa) => {
 export const fetchSucursales = (empresaId) =>
   request(`/empresas/${empresaId}/sucursales`);
 
+export const fetchAllSucursales = () => request('/sucursales');
+
+// Llamada pública ligera a sucursales (no envía cookies/credenciales)
+export const fetchPublicSucursales = async () => {
+  // Usar endpoint público específico para evitar middleware/401
+  const url = `${API_BASE_URL}/public/sucursales`;
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!res.ok) {
+    const text = await res.text().catch(() => null);
+    const err = new Error(`Error fetching public sucursales: ${res.status}`);
+    err.status = res.status;
+    err.payload = text;
+    throw err;
+  }
+  try {
+    return await res.json();
+  } catch (e) {
+    return null;
+  }
+};
+
 export const saveSucursal = (empresaId, sucursal) => {
   if (sucursal?.id) {
     return request(`/sucursales/${sucursal.id}`, { method: 'PUT', body: sucursal });
@@ -80,6 +101,26 @@ export const resetUsuarioPassword = (usuarioId, payload = {}) =>
 
 // Clientes
 export const fetchClientes = () => request('/clientes');
+
+export const fetchClienteByRut = async (rut) => {
+  if (!rut) return null;
+  try {
+    const res = await request(`/clientes?rut=${encodeURIComponent(rut)}`);
+    const list = Array.isArray(res) ? res : (res?.data ?? []);
+    return list.length ? list[0] : null;
+  } catch (err) {
+    // Fallback: obtener todos y filtrar localmente
+    try {
+      const all = await fetchClientes();
+      const arr = Array.isArray(all) ? all : (all?.data ?? []);
+      const cleaned = rut.replace(/[^0-9Kk]/g, '');
+      return arr.find(c => (c.rut || '').replace(/[^0-9Kk]/g, '') === cleaned) || null;
+    } catch (e) {
+      console.error('Error buscando cliente por RUT', e);
+      return null;
+    }
+  }
+};
 
 export const fetchInactivos = (params = {}) => {
   const query = new URLSearchParams(params).toString();

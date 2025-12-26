@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import NuevaVenta from '../components/ventas/NuevaVenta';
 import DetalleVenta from '../components/ventas/DetalleVenta';
 import VentasDiarias from '../components/ventas/VentasDiarias';
 import VentasEliminadas from '../components/ventas/VentasEliminadas';
 import VentaMasiva from '../components/ventas/VentaMasiva';
+import ventasApi from '../utils/ventasApi';
+import { fetchPublicSucursales } from '../utils/configApi';
 
 function Ventas() {
   const [filtros, setFiltros] = useState({
@@ -23,6 +25,24 @@ function Ventas() {
     setShowNuevaVenta(true);
   };
 
+  const [ventasList, setVentasList] = useState([]);
+  const [sucursales, setSucursales] = useState([]);
+
+  useEffect(() => {
+    let mounted = true;
+    fetchPublicSucursales()
+      .then(res => {
+        if (!mounted) return;
+        const list = Array.isArray(res) ? res : (res?.data ?? []);
+        setSucursales(list || []);
+      })
+      .catch(err => {
+        console.error('Error cargando sucursales (public):', err);
+        setSucursales([]);
+      });
+    return () => { mounted = false; };
+  }, []);
+
   const handleVerDia = (fecha) => {
     setFechaSeleccionada(fecha);
     setShowVentasDiarias(true);
@@ -34,9 +54,17 @@ function Ventas() {
   };
 
   const handleGuardarVenta = (ventaData) => {
-    console.log('Nueva venta:', ventaData);
-    // Aquí se implementará la lógica para guardar la venta
-    setShowNuevaVenta(false);
+    // Guardar en backend
+    ventasApi.createVenta(ventaData)
+      .then(res => {
+        alert('Venta guardada');
+        setShowNuevaVenta(false);
+        handleBuscar();
+      })
+      .catch(err => {
+        console.error(err);
+        alert(err.message || 'Error al guardar la venta');
+      });
   };
 
   const handleFiltroChange = (campo, valor) => {
@@ -47,8 +75,27 @@ function Ventas() {
   };
 
   const handleExportExcel = () => {
-    // Aquí se implementará la lógica para exportar a Excel
-    console.log('Exportando a Excel...');
+    ventasApi.exportVentas(filtros)
+      .catch(err => {
+        console.error(err);
+        alert('Error al exportar');
+      });
+  };
+
+  const handleBuscar = () => {
+    const params = {};
+    if (filtros.fecha) params.fecha = filtros.fecha;
+    if (filtros.sucursal) params.sucursal = filtros.sucursal;
+    if (filtros.metodoPago) params.metodoPago = filtros.metodoPago;
+
+    ventasApi.listVentas(params)
+      .then(res => {
+        setVentasList(res.data || []);
+      })
+      .catch(err => {
+        console.error(err);
+        alert('Error al obtener ventas');
+      });
   };
 
   if (showVentasDiarias) {
@@ -146,7 +193,7 @@ function Ventas() {
               </select>
             </div>
             <div className="col-md-3 d-flex align-items-end">
-              <button className="btn btn-primary w-100">
+              <button className="btn btn-primary w-100" onClick={handleBuscar}>
                 <i className="bi bi-search me-2"></i>
                 Buscar
               </button>
@@ -179,27 +226,34 @@ function Ventas() {
                 </tr>
               </thead>
               <tbody>
-                <tr>
-                  <td>2023-12-01</td>
-                  <td>Central</td>
-                  <td>$500,000</td>
-                  <td>$300,000</td>
-                  <td>$200,000</td>
-                  <td>$400,000</td>
-                  <td>$0</td>
-                  <td>$100,000</td>
-                  <td>$150,000</td>
-                  <td className="fw-bold">$1,650,000</td>
-                  <td className="text-danger">$150,000</td>
-                  <td>
-                    <button 
-                      className="btn btn-sm btn-primary"
-                      onClick={() => handleVerDia('2023-12-01')}
-                    >
-                      Ver Día
-                    </button>
-                  </td>
-                </tr>
+                {ventasList.length === 0 && (
+                  <tr>
+                    <td colSpan="12" className="text-center">No hay ventas para los filtros seleccionados</td>
+                  </tr>
+                )}
+                {ventasList.map((v) => (
+                  <tr key={v.id}>
+                    <td>{v.fecha}</td>
+                    <td>{v.sucursal}</td>
+                    <td>{v.subtotal ? `$${Number(v.subtotal).toLocaleString()}` : '-'}</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td className="fw-bold">{v.total ? `$${Number(v.total).toLocaleString()}` : '-'}</td>
+                    <td className="text-danger">-</td>
+                    <td>
+                      <button 
+                        className="btn btn-sm btn-primary"
+                        onClick={() => handleVerDia(v.fecha)}
+                      >
+                        Ver Día
+                      </button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
               <tfoot className="table-light">
                 <tr className="fw-bold">

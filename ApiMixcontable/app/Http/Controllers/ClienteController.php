@@ -9,9 +9,27 @@ use Illuminate\Support\Facades\Auth;
 
 class ClienteController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
-        return response()->json(Cliente::orderBy('razon_social')->get());
+        $query = Cliente::query();
+
+        // Búsqueda por rut o término q
+        if ($request->filled('rut')) {
+            $rut = $request->get('rut');
+            $query->where('rut', 'like', "%{$rut}%");
+        }
+
+        if ($request->filled('q')) {
+            $q = $request->get('q');
+            $query->where(function($qbuilder) use ($q) {
+                $qbuilder->where('razon_social', 'like', "%{$q}%")
+                    ->orWhere('nombre_fantasia', 'like', "%{$q}%")
+                    ->orWhere('rut', 'like', "%{$q}%");
+            });
+        }
+
+        $clientes = $query->orderBy('razon_social')->get();
+        return response()->json($clientes);
     }
 
     public function store(Request $request)

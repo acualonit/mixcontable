@@ -1,0 +1,64 @@
+import { API_BASE_URL } from './configApi';
+
+async function fetchJson(path, opts = {}) {
+  const url = `${API_BASE_URL}${path}`;
+  const defaultOpts = { credentials: 'include', headers: { 'Content-Type': 'application/json', Accept: 'application/json' } };
+  const finalOpts = { ...defaultOpts, ...opts };
+  if (opts.body && !(opts.body instanceof FormData)) {
+    finalOpts.body = JSON.stringify(opts.body);
+  }
+  const res = await fetch(url, finalOpts);
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch (e) { data = text; }
+
+  if (res.status === 204) return null;
+
+  if (!res.ok) {
+    const err = new Error((data && data.message) ? data.message : `HTTP error ${res.status}`);
+    err.status = res.status;
+    err.body = data;
+    throw err;
+  }
+
+  return data;
+}
+
+export const listVentas = (params = {}) => {
+  const query = new URLSearchParams(params).toString();
+  return fetchJson(`/ventas${query ? `?${query}` : ''}`);
+};
+
+export const getVenta = (id) => fetchJson(`/ventas/${id}`);
+
+export const createVenta = (payload) => fetchJson('/ventas', { method: 'POST', body: payload });
+
+export const updateVenta = (id, payload) => fetchJson(`/ventas/${id}`, { method: 'PUT', body: payload });
+
+export const deleteVenta = (id) => fetchJson(`/ventas/${id}`, { method: 'DELETE' });
+
+export const exportVentas = async (params = {}) => {
+  const query = new URLSearchParams(params).toString();
+  const url = `${API_BASE_URL}/ventas/export${query ? `?${query}` : ''}`;
+
+  const resp = await fetch(url, { credentials: 'include' });
+  if (!resp.ok) throw new Error('Error al exportar ventas');
+  const blob = await resp.blob();
+  const link = document.createElement('a');
+  const urlBlob = window.URL.createObjectURL(blob);
+  link.href = urlBlob;
+  link.download = `ventas_export_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(urlBlob);
+};
+
+export default {
+  listVentas,
+  getVenta,
+  createVenta,
+  updateVenta,
+  deleteVenta,
+  exportVentas,
+};

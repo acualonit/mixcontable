@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { fetchPublicSucursales, fetchClienteByRut } from '../../utils/configApi';
 
 function NuevaVenta({ onClose, onSave }) {
   const [formData, setFormData] = useState({
@@ -10,14 +11,6 @@ function NuevaVenta({ onClose, onSave }) {
     folioVenta: '',
     items: [{ descripcion: '', cantidad: 1, precioUnitario: 0 }],
     metodoPago1: {
-      tipo: 'efectivo',
-      monto: 0,
-      numeroVoucher: '',
-      numeroCheque: '',
-      fechaCobroCheque: '',
-      fechaPagoCredito: ''
-    },
-    metodoPago2: {
       tipo: '',
       monto: 0,
       numeroVoucher: '',
@@ -30,15 +23,46 @@ function NuevaVenta({ onClose, onSave }) {
   });
 
   const [clienteBuscado, setClienteBuscado] = useState(null);
+  const [sucursales, setSucursales] = useState([]);
+
+  useEffect(() => {
+    let mounted = true;
+    fetchPublicSucursales()
+      .then(res => {
+        if (!mounted) return;
+        const list = Array.isArray(res) ? res : (res?.data ?? []);
+        setSucursales(list || []);
+      })
+      .catch(err => {
+        console.error('Error cargando sucursales (public):', err);
+        setSucursales([]);
+      });
+    return () => { mounted = false; };
+  }, []);
 
   const handleBuscarCliente = async () => {
-    if (formData.rut) {
-      setClienteBuscado({
-        rut: formData.rut,
-        nombre: 'Empresa de Ejemplo SpA',
-        direccion: 'Av. Principal 123',
-        telefono: '+56 2 2345 6789'
-      });
+    if (!formData.rut) return alert('Ingrese RUT para buscar');
+    try {
+      const cliente = await fetchClienteByRut(formData.rut);
+      if (!cliente) {
+        setClienteBuscado(null);
+        return alert('Cliente no encontrado');
+      }
+      setClienteBuscado(cliente);
+      // Asegurar que `formData.cliente` sea siempre el id numérico del cliente
+      let clienteId = null;
+      if (typeof cliente === 'number') {
+        clienteId = cliente;
+      } else if (typeof cliente === 'string' && /^\d+$/.test(cliente)) {
+        clienteId = Number(cliente);
+      } else if (cliente && typeof cliente === 'object') {
+        clienteId = cliente.id ?? cliente.ID ?? cliente.id_cliente ?? null;
+        if (clienteId !== null) clienteId = Number(clienteId);
+      }
+      setFormData(prev => ({ ...prev, cliente: clienteId }));
+    } catch (err) {
+      console.error('Error buscando cliente', err);
+      alert('Error al buscar cliente');
     }
   };
 
@@ -59,7 +83,6 @@ function NuevaVenta({ onClose, onSave }) {
     newItems[index][field] = value;
     setFormData({ ...formData, items: newItems });
   };
-
   const handleMetodoPagoChange = (metodoPagoNum, field, value) => {
     setFormData(prev => ({
       ...prev,
@@ -72,17 +95,16 @@ function NuevaVenta({ onClose, onSave }) {
 
   const calcularSubtotal = () => {
     return formData.items.reduce((total, item) => {
-      return total + (item.cantidad * item.precioUnitario);
+      return total + ((Number(item.cantidad) || 0) * (Number(item.precioUnitario) || 0));
     }, 0);
   };
 
   const calcularIVA = (subtotal) => {
-    return subtotal * 0.19; // IVA Chile: 19%
+    return subtotal * 0.19;
   };
 
   const registrarMovimientoEfectivo = async (movimiento) => {
     try {
-      // Aquí irá la lógica para guardar el movimiento en la base de datos
       console.log('Registrando movimiento en efectivo:', movimiento);
     } catch (error) {
       console.error('Error al registrar movimiento en efectivo:', error);
@@ -96,38 +118,44 @@ function NuevaVenta({ onClose, onSave }) {
     const iva = calcularIVA(subtotal);
     const total = subtotal + iva;
 
-    // Validar que la suma de los montos de pago sea igual al total
-    const totalPagos = formData.metodoPago1.monto + (formData.metodoPago2.tipo ? formData.metodoPago2.monto : 0);
+    // Validar que el monto del método de pago sea igual al total
+    const totalPagos = Number(formData.metodoPago1.monto || 0);
     if (totalPagos !== total) {
-      alert('La suma de los montos de pago debe ser igual al total de la venta');
+      alert('El monto del método de pago debe ser igual al total de la venta');
       return;
     }
 
+    // Transformar a formato esperado por el backend
+    const detalles = formData.items.map(item => ({
+      descripcion: item.descripcion,
+      cantidad: Number(item.cantidad) || 0,
+      precio_unitario: Number(item.precioUnitario) || 0,
+      total_linea: (Number(item.cantidad) || 0) * (Number(item.precioUnitario) || 0),
+    }));
+
     const ventaData = {
-      ...formData,
+      fecha: formData.fecha,
+      sucursal_id: formData.sucursal ? Number(formData.sucursal) : null,
+      cliente_id: formData.cliente ? Number(formData.cliente) : null,
+      documentoVenta: formData.documentoVenta || null,
+      folioVenta: formData.folioVenta || null,
       subtotal,
       iva,
       total,
-      estado: 'pendiente'
+      // Enviamos literal que coincide con el enum de la columna `ventas.metodos_pago`
+      metodos_pago: formData.metodoPago1.tipo || null,
+      observaciones: formData.observaciones || null,
+      estado: 'REGISTRADA',
+      detalles,
     };
 
     // Si hay pago en efectivo y está marcado para incluir en flujo de caja,
     // registrar el movimiento en efectivo
     if (formData.incluirFlujoCaja) {
-      if (formData.metodoPago1.tipo === 'efectivo') {
+      if (formData.metodoPago1.tipo === 'Efectivo') {
         registrarMovimientoEfectivo({
           fecha: formData.fecha,
           valor: formData.metodoPago1.monto,
-          detalle: `Venta en efectivo - ${formData.documentoVenta} ${formData.folioVenta}`,
-          tipo: 'ingreso',
-          categoria: 'Venta',
-          sucursal: formData.sucursal
-        });
-      }
-      if (formData.metodoPago2.tipo === 'efectivo') {
-        registrarMovimientoEfectivo({
-          fecha: formData.fecha,
-          valor: formData.metodoPago2.monto,
           detalle: `Venta en efectivo - ${formData.documentoVenta} ${formData.folioVenta}`,
           tipo: 'ingreso',
           categoria: 'Venta',
@@ -146,23 +174,21 @@ function NuevaVenta({ onClose, onSave }) {
     return (
       <div className="row mb-3">
         <div className="col-md-4">
-          <label className="form-label">
-            {metodoPagoNum === 1 ? 'Primer Método de Pago' : 'Segundo Método de Pago'}
-          </label>
+          <label className="form-label">Método de Pago</label>
           <select 
             className="form-select"
             value={metodoPago.tipo}
             onChange={(e) => handleMetodoPagoChange(metodoPagoNum, 'tipo', e.target.value)}
-            required={metodoPagoNum === 1}
+            required
           >
             <option value="">Seleccionar método</option>
-            <option value="efectivo">Efectivo</option>
-            <option value="transferencia">Transferencia</option>
-            <option value="debito">Tarjeta Débito</option>
-            <option value="credito">Tarjeta Crédito</option>
-            <option value="cheque">Cheque</option>
-            <option value="online">Pago Online</option>
-            <option value="credito_deuda">Crédito (Deuda)</option>
+            <option value="Efectivo">Efectivo</option>
+            <option value="Transferencia">Transferencia</option>
+            <option value="Tarejeta Debito">Tarjeta Débito</option>
+            <option value="Tarjeta Credito">Tarjeta Crédito</option>
+            <option value="Cheque">Cheque</option>
+            <option value="Pago Online">Pago Online</option>
+            <option value="Credito (Deuda)">Credito (Deuda)</option>
           </select>
         </div>
 
@@ -179,56 +205,7 @@ function NuevaVenta({ onClose, onSave }) {
           </div>
         )}
 
-        {(metodoPago.tipo === 'debito' || metodoPago.tipo === 'credito') && (
-          <div className="col-md-4">
-            <label className="form-label">Número de Voucher</label>
-            <input
-              type="text"
-              className="form-control"
-              value={metodoPago.numeroVoucher}
-              onChange={(e) => handleMetodoPagoChange(metodoPagoNum, 'numeroVoucher', e.target.value)}
-              required
-            />
-          </div>
-        )}
-
-        {metodoPago.tipo === 'cheque' && (
-          <>
-            <div className="col-md-4">
-              <label className="form-label">Número de Cheque</label>
-              <input
-                type="text"
-                className="form-control"
-                value={metodoPago.numeroCheque}
-                onChange={(e) => handleMetodoPagoChange(metodoPagoNum, 'numeroCheque', e.target.value)}
-                required
-              />
-            </div>
-            <div className="col-md-4">
-              <label className="form-label">Fecha de Cobro</label>
-              <input
-                type="date"
-                className="form-control"
-                value={metodoPago.fechaCobroCheque}
-                onChange={(e) => handleMetodoPagoChange(metodoPagoNum, 'fechaCobroCheque', e.target.value)}
-                required
-              />
-            </div>
-          </>
-        )}
-
-        {metodoPago.tipo === 'credito_deuda' && (
-          <div className="col-md-4">
-            <label className="form-label">Fecha de Pago</label>
-            <input
-              type="date"
-              className="form-control"
-              value={metodoPago.fechaPagoCredito}
-              onChange={(e) => handleMetodoPagoChange(metodoPagoNum, 'fechaPagoCredito', e.target.value)}
-              required
-            />
-          </div>
-        )}
+        {/* No mostramos campos extra (voucher/cheque/fechas) según petición del usuario */}
       </div>
     );
   };
@@ -263,9 +240,11 @@ function NuevaVenta({ onClose, onSave }) {
                     required
                   >
                     <option value="">Seleccionar sucursal</option>
-                    <option value="central">Sucursal Central</option>
-                    <option value="norte">Sucursal Norte</option>
-                    <option value="sur">Sucursal Sur</option>
+                    {sucursales.map((s) => (
+                      <option key={s.id ?? s.ID ?? s.id_sucursal} value={s.id ?? s.ID ?? s.id_sucursal}>
+                        {s.nombre ?? s.name ?? s.nombre_sucursal ?? s.nombre}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <div className="col-md-3">
@@ -324,13 +303,21 @@ function NuevaVenta({ onClose, onSave }) {
               </div>
 
               {clienteBuscado && (
-                <div className="alert alert-info mb-3">
-                  <h6 className="mb-1">Cliente encontrado:</h6>
-                  <p className="mb-0">
-                    <strong>Nombre:</strong> {clienteBuscado.nombre}<br />
-                    <strong>RUT:</strong> {clienteBuscado.rut}<br />
-                    <strong>Dirección:</strong> {clienteBuscado.direccion}
-                  </p>
+                <div className="alert alert-info mb-3 d-flex justify-content-between align-items-start">
+                  <div>
+                    <p className="mb-1"><strong>Nombre:</strong> {clienteBuscado.razon_social || clienteBuscado.nombre || clienteBuscado.nombre_fantasia || clienteBuscado.nombre_completo || ''}</p>
+                    <p className="mb-0"><strong>RUT:</strong> {clienteBuscado.rut || clienteBuscado.documento || ''}</p>
+                    {clienteBuscado.direccion && (<p className="mb-0"><strong>Dirección:</strong> {clienteBuscado.direccion}</p>)}
+                  </div>
+                  <div>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline-danger"
+                      onClick={() => { setClienteBuscado(null); setFormData(prev => ({ ...prev, cliente: null, rut: '' })); }}
+                    >
+                      Quitar
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -397,7 +384,6 @@ function NuevaVenta({ onClose, onSave }) {
 
               {/* Métodos de Pago */}
               {renderCamposMetodoPago(1)}
-              {renderCamposMetodoPago(2)}
 
               {/* Opción Incluir en Flujo de Caja */}
               <div className="mb-3">

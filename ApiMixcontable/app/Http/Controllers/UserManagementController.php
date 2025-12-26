@@ -13,7 +13,7 @@ class UserManagementController extends Controller
     public function index()
     {
         return response()->json(
-            User::orderBy('name')->get()
+            User::with('sucursal')->orderBy('name')->get()
         );
     }
 
@@ -21,14 +21,15 @@ class UserManagementController extends Controller
     {
         $data = $this->validateUser($request);
         $temporaryPassword = $data['password'] ?? Str::random(10);
+        $plainPassword = $data['password'] ?? null;
         $data['password'] = Hash::make($temporaryPassword);
 
         $user = User::create($data);
 
         return response()->json([
             'message' => 'Usuario creado',
-            'user' => $user->fresh(),
-            'temporary_password' => $request->filled('password') ? null : $temporaryPassword,
+            'user' => $user->fresh()->load('sucursal'),
+            'temporary_password' => $request->filled('password') ? $plainPassword : $temporaryPassword,
         ], 201);
     }
 
@@ -43,7 +44,9 @@ class UserManagementController extends Controller
             ], 422);
         }
 
+        $plainPassword = null;
         if (!empty($data['password'])) {
+            $plainPassword = $data['password'];
             $data['password'] = Hash::make($data['password']);
         } else {
             unset($data['password']);
@@ -53,7 +56,8 @@ class UserManagementController extends Controller
 
         return response()->json([
             'message' => 'Usuario actualizado',
-            'user' => $user->fresh(),
+            'user' => $user->fresh()->load('sucursal'),
+            'temporary_password' => $plainPassword,
         ]);
     }
 

@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use Illuminate\Database\Seeder;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
 
 class UsersSeeder extends Seeder
 {
@@ -35,15 +36,24 @@ class UsersSeeder extends Seeder
 		];
 
 		foreach ($users as $data) {
+			$payload = [
+				'name' => $data['name'],
+				'password' => Hash::make($data['password']),
+				'role' => $data['role'],
+				'status' => 'ACTIVO',
+			];
+
+			if (Schema::hasColumn('users', 'username')) {
+				$payload['username'] = $data['username'];
+			}
+
+			if (Schema::hasColumn('users', 'id_sucursal')) {
+				$payload['id_sucursal'] = 1;
+			}
+
 			User::updateOrCreate(
 				['email' => $data['email']],
-				[
-					'name' => $data['name'],
-					'username' => $data['username'],
-					'password' => Hash::make($data['password']),
-					'role' => $data['role'],
-					'status' => 'ACTIVO',
-				]
+				$payload
 			);
 		}
 	}

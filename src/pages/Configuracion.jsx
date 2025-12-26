@@ -65,6 +65,9 @@ const normalizeUsuario = (usuario = {}) => ({
   email: usuario.email ?? '',
   role: usuario.role ?? 'SUPERVISOR',
   status: usuario.status ?? 'ACTIVO',
+  id_sucursal: usuario.id_sucursal ?? usuario.idSucursal ?? usuario.sucursal?.id ?? null,
+  sucursal: usuario.sucursal ?? null,
+  password: usuario.password ?? '',
 });
 
 const formatDateTime = (value) => {
@@ -92,6 +95,10 @@ function Configuracion() {
   const [feedback, setFeedback] = useState(null);
   const [saving, setSaving] = useState({ empresa: false, sucursal: null, usuario: null, respaldo: false });
   const [archivoRestauracion, setArchivoRestauracion] = useState(null);
+  const [showUsuarioModal, setShowUsuarioModal] = useState(false);
+  const [usuarioView, setUsuarioView] = useState(null);
+  const [modalTempPassword, setModalTempPassword] = useState(null);
+  const [modalShowPasswordPlain, setModalShowPasswordPlain] = useState(false);
 
   const ultimoRespaldo = useMemo(() => (respaldos.length ? respaldos[0] : null), [respaldos]);
 
@@ -228,8 +235,23 @@ function Configuracion() {
   const handleGuardarUsuario = async (usuario) => {
     setSaving((prev) => ({ ...prev, usuario: usuario.localId }));
     try {
-      const response = await saveUsuario(usuario);
+      const plainPassword = usuario.password ?? null;
+      // preparar payload: no enviar contraseña vacía
+      const payload = {
+        ...usuario,
+      };
+      if (!payload.password) {
+        delete payload.password;
+      }
+      // si usamos id_sucursal, asegurarnos que sea null o number
+      if (payload.id_sucursal === '') payload.id_sucursal = null;
+
+      const response = await saveUsuario(payload);
       const usuarioActualizado = normalizeUsuario(response.user ?? response);
+      // si el usuario tenía una contraseña ingresada en el formulario, conservarla localmente para mostrarla
+      if (plainPassword) {
+        usuarioActualizado.password = plainPassword;
+      }
       setUsuarios((prev) => prev.map((item) => (item.localId === usuario.localId ? { ...usuarioActualizado, localId: usuario.localId } : item)));
       if (response.temporary_password) {
         mostrarFeedback('info', `Contraseña temporal: ${response.temporary_password}`);
@@ -256,6 +278,39 @@ function Configuracion() {
       mostrarFeedback('success', 'Usuario eliminado');
     } catch (error) {
       mostrarFeedback('danger', error.message);
+    }
+  };
+
+  const handleShowUsuario = (usuario) => {
+    setUsuarioView(usuario);
+    setModalTempPassword(null);
+    setModalShowPasswordPlain(false);
+    setShowUsuarioModal(true);
+  };
+
+  const handleCloseUsuarioModal = () => {
+    setShowUsuarioModal(false);
+    setUsuarioView(null);
+    setModalTempPassword(null);
+    setModalShowPasswordPlain(false);
+  };
+
+  const handleGenerateTempPasswordInModal = async () => {
+    if (!usuarioView?.id) return;
+    setSaving((prev) => ({ ...prev, usuario: usuarioView.localId }));
+    try {
+      const res = await resetUsuarioPassword(usuarioView.id);
+      if (res.temporary_password) {
+        setModalTempPassword(res.temporary_password);
+        setModalShowPasswordPlain(true);
+        mostrarFeedback('info', 'Se generó una contraseña temporal para el usuario');
+      } else {
+        mostrarFeedback('success', res.message ?? 'Contraseña generada');
+      }
+    } catch (err) {
+      mostrarFeedback('danger', err.message);
+    } finally {
+      setSaving((prev) => ({ ...prev, usuario: null }));
     }
   };
 
@@ -478,6 +533,66 @@ function Configuracion() {
             </div>
           )}
 
+          {showUsuarioModal && usuarioView && (
+            <div className="modal d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+              <div className="modal-dialog">
+                <div className="modal-content">
+                  <div className="modal-header bg-secondary text-white">
+                    <h5 className="modal-title">Detalle Usuario</h5>
+                    <button type="button" className="btn-close" onClick={handleCloseUsuarioModal}></button>
+                  </div>
+                  <div className="modal-body">
+                    <dl className="row">
+                      <dt className="col-sm-4">Usuario</dt>
+                      <dd className="col-sm-8">{usuarioView.username ?? '—'}</dd>
+
+                      <dt className="col-sm-4">Nombre</dt>
+                      <dd className="col-sm-8">{usuarioView.name ?? '—'}</dd>
+
+                      <dt className="col-sm-4">Email</dt>
+                      <dd className="col-sm-8">{usuarioView.email ?? '—'}</dd>
+
+                      <dt className="col-sm-4">Sucursal</dt>
+                      <dd className="col-sm-8">{usuarioView.sucursal?.nombre ?? (sucursales.find(s => String(s.id) === String(usuarioView.id_sucursal)) || {}).nombre ?? '-- Ninguna --'}</dd>
+
+                      <dt className="col-sm-4">Rol</dt>
+                      <dd className="col-sm-8">{usuarioView.role ?? '—'}</dd>
+
+                      <dt className="col-sm-4">Estado</dt>
+                      <dd className="col-sm-8">{usuarioView.status ?? '—'}</dd>
+
+                      <dt className="col-sm-4">Contraseña</dt>
+                      <dd className="col-sm-8">
+                        {usuarioView.password ? (
+                          <div>{modalShowPasswordPlain ? usuarioView.password : '******'}</div>
+                        ) : modalTempPassword ? (
+                          <div>{modalTempPassword}</div>
+                        ) : (
+                          <div className="text-muted">No disponible</div>
+                        )}
+                        <div className="mt-2">
+                          {!modalTempPassword && usuarioView.id && (
+                            <button className="btn btn-sm btn-outline-secondary me-2" onClick={handleGenerateTempPasswordInModal} disabled={saving.usuario === usuarioView.localId}>
+                              Generar contraseña temporal
+                            </button>
+                          )}
+                          {usuarioView.password && (
+                            <button className="btn btn-sm btn-outline-secondary" onClick={() => setModalShowPasswordPlain((v) => !v)}>
+                              {modalShowPasswordPlain ? 'Ocultar' : 'Mostrar'}
+                            </button>
+                          )}
+                        </div>
+                      </dd>
+                    </dl>
+                  </div>
+                  <div className="modal-footer">
+                    <button type="button" className="btn btn-secondary" onClick={handleCloseUsuarioModal}>Cerrar</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {!loading && activeTab === 'usuarios' && (
             <div>
               <div className="d-flex justify-content-between align-items-center mb-3">
@@ -494,6 +609,8 @@ function Configuracion() {
                       <th>Usuario</th>
                       <th>Nombre</th>
                       <th>Email</th>
+                      <th>Sucursal</th>
+                      <th>Contraseña</th>
                       <th>Rol</th>
                       <th>Estado</th>
                       <th className="text-end">Acciones</th>
@@ -510,6 +627,17 @@ function Configuracion() {
                         </td>
                         <td>
                           <input type="email" className="form-control" value={usuario.email} onChange={(event) => handleUsuarioField(usuario.localId, 'email', event.target.value)} />
+                        </td>
+                        <td>
+                          <select className="form-select" value={usuario.id_sucursal ?? ''} onChange={(event) => handleUsuarioField(usuario.localId, 'id_sucursal', event.target.value || null)}>
+                            <option value="">-- Ninguna --</option>
+                            {sucursales.map((s) => (
+                              <option key={s.localId} value={s.id ?? ''}>{s.nombre}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td>
+                          <input type="password" className="form-control" placeholder="Dejar vacío para no cambiar" value={usuario.password ?? ''} onChange={(event) => handleUsuarioField(usuario.localId, 'password', event.target.value)} />
                         </td>
                         <td>
                           <select className="form-select" value={usuario.role} onChange={(event) => handleUsuarioField(usuario.localId, 'role', event.target.value)}>
@@ -531,6 +659,9 @@ function Configuracion() {
                         </td>
                         <td className="text-end">
                           <div className="btn-group">
+                            <button type="button" className="btn btn-sm btn-outline-info" onClick={() => handleShowUsuario(usuario)} title="Ver">
+                              <i className="bi bi-eye" />
+                            </button>
                             <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => handleGuardarUsuario(usuario)} disabled={saving.usuario === usuario.localId}>
                               {saving.usuario === usuario.localId ? 'Guardando...' : 'Guardar'}
                             </button>

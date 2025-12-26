@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { registrarMovimientoEfectivo } from '../../utils/efectivoUtils';
+import { createCheque, updateCheque } from '../../utils/chequesApi';
+import { fetchSucursales, fetchCuentas } from '../../utils/bancoApi';
 
-function NuevoCheque({ onClose, onSave }) {
+function NuevoCheque({ onClose, onSave, initialData = null }) {
   const [formData, setFormData] = useState({
     tipo: 'emitido',
     banco: '',
@@ -12,9 +14,48 @@ function NuevoCheque({ onClose, onSave }) {
     origenDestino: '',
     sucursal: '',
     concepto: '',
+    estado: 'Pendiente',
     incluirFlujoCaja: true,
     observaciones: ''
   });
+
+  const [sucursales, setSucursales] = useState([]);
+  const [cuentas, setCuentas] = useState([]);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [resSuc, resCtas] = await Promise.all([fetchSucursales(), fetchCuentas()]);
+        const list = resSuc?.data ?? resSuc ?? [];
+        const ctas = resCtas?.data ?? resCtas ?? [];
+        setSucursales(list);
+        setCuentas(ctas);
+      } catch (err) {
+        console.error('Error cargando sucursales', err);
+      }
+    };
+    load();
+  }, []);
+
+  // Si se proporciona initialData (editar), cargarlo en el formulario
+  useEffect(() => {
+    if (!initialData) return;
+    setFormData((prev) => ({
+      ...prev,
+      cuenta_id: initialData.cuenta_id ?? prev.cuenta_id,
+      banco: initialData.cuenta_banco ?? initialData.banco ?? prev.banco,
+      numeroCheque: initialData.numero_cheque ?? prev.numeroCheque,
+      fechaEmision: initialData.fecha_emision ?? prev.fechaEmision,
+      fechaCobro: initialData.fecha_cobro ?? prev.fechaCobro,
+      monto: initialData.monto ?? prev.monto,
+      origenDestino: initialData.beneficiario ?? prev.origenDestino,
+      concepto: initialData.concepto ?? prev.concepto,
+      observaciones: initialData.observaciones ?? prev.observaciones,
+      sucursal: initialData.id_sucursal ?? prev.sucursal,
+      tipo: prev.tipo,
+      estado: initialData.estado ?? prev.estado
+    }));
+  }, [initialData]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -37,8 +78,32 @@ function NuevoCheque({ onClose, onSave }) {
       }
     }
 
-    onSave(formData);
-    onClose();
+    try {
+      const payload = {
+        cuenta_id: formData.cuenta_id ?? null,
+        numero_cheque: formData.numeroCheque,
+        fecha_emision: formData.fechaEmision,
+        fecha_cobro: formData.fechaCobro || null,
+        beneficiario: formData.origenDestino,
+        concepto: formData.concepto,
+        monto: parseFloat(formData.monto) || 0,
+        estado: formData.estado || 'Pendiente',
+        observaciones: formData.observaciones || null
+      };
+
+      let res;
+      if (initialData && initialData.id) {
+        res = await updateCheque(initialData.id, payload);
+      } else {
+        res = await createCheque(payload);
+      }
+
+      if (onSave) onSave(res.data);
+      onClose();
+    } catch (err) {
+      console.error(err);
+      alert(err.message || 'Error guardando cheque');
+    }
   };
 
   return (
@@ -65,21 +130,33 @@ function NuevoCheque({ onClose, onSave }) {
                   </select>
                 </div>
                 <div className="col-md-6">
-                  <label className="form-label">Banco</label>
+                  <label className="form-label">Banco / Cuenta</label>
                   <select
                     className="form-select"
-                    value={formData.banco}
-                    onChange={(e) => setFormData({...formData, banco: e.target.value})}
+                    value={formData.cuenta_id ?? ''}
+                    onChange={(e) => {
+                      const cuentaId = e.target.value ? parseInt(e.target.value, 10) : null;
+                      setFormData((prev) => {
+                        const selected = cuentas.find((c) => c.id === cuentaId);
+                        return {
+                          ...prev,
+                          cuenta_id: cuentaId,
+                          banco: selected ? selected.banco : prev.banco,
+                          sucursal: selected && selected.id_sucursal ? selected.id_sucursal : prev.sucursal
+                        };
+                      });
+                    }}
                     required
                   >
-                    <option value="">Seleccionar banco</option>
-                    <option value="banco_estado">Banco Estado</option>
-                    <option value="banco_chile">Banco de Chile</option>
-                    <option value="banco_santander">Banco Santander</option>
-                    <option value="banco_bci">Banco BCI</option>
+                    <option value="">Seleccionar cuenta</option>
+                    {cuentas.map((ct) => (
+                      <option key={ct.id} value={ct.id}>{`${ct.banco} - ${ct.numero_cuenta}`}</option>
+                    ))}
                   </select>
                 </div>
               </div>
+
+              
 
               <div className="row mb-3">
                 <div className="col-md-6">
@@ -94,17 +171,18 @@ function NuevoCheque({ onClose, onSave }) {
                 </div>
                 <div className="col-md-6">
                   <label className="form-label">Sucursal</label>
-                  <select
-                    className="form-select"
-                    value={formData.sucursal}
-                    onChange={(e) => setFormData({...formData, sucursal: e.target.value})}
-                    required
-                  >
-                    <option value="">Seleccionar sucursal</option>
-                    <option value="central">Sucursal Central</option>
-                    <option value="norte">Sucursal Norte</option>
-                    <option value="sur">Sucursal Sur</option>
-                  </select>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={
+                      (() => {
+                        const id = Number(formData.sucursal || formData.sucursal === 0 ? formData.sucursal : NaN);
+                        const s = sucursales.find((x) => x.id === id);
+                        return s ? s.nombre : '';
+                      })()
+                    }
+                    readOnly
+                  />
                 </div>
               </div>
 
@@ -131,21 +209,37 @@ function NuevoCheque({ onClose, onSave }) {
                 </div>
               </div>
 
-              <div className="mb-3">
-                <label className="form-label">Monto</label>
-                <input
-                  type="number"
-                  className="form-control"
-                  value={formData.monto}
-                  onChange={(e) => setFormData({...formData, monto: e.target.value})}
-                  required
-                />
+              <div className="row mb-3">
+                <div className="col-md-6">
+                  <label className="form-label">Monto</label>
+                  <input
+                    type="number"
+                    className="form-control"
+                    value={formData.monto}
+                    onChange={(e) => setFormData({...formData, monto: e.target.value})}
+                    required
+                  />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Estado</label>
+                  <select
+                    className="form-select"
+                    value={formData.estado}
+                    onChange={(e) => setFormData({...formData, estado: e.target.value})}
+                    required
+                  >
+                    <option value="Pendiente">Pendiente</option>
+                    <option value="Cobrado">Cobrado</option>
+                    <option value="Rechazado">Rechazado</option>
+                    <option value="Prestado">Prestado</option>
+                  </select>
+                </div>
               </div>
 
+              
+
               <div className="mb-3">
-                <label className="form-label">
-                  {formData.tipo === 'emitido' ? 'Destinatario' : 'Origen'}
-                </label>
+                <label className="form-label">Destinatario</label>
                 <input
                   type="text"
                   className="form-control"
