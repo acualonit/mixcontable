@@ -17,98 +17,14 @@ class BancoController extends Controller
             return response()->json(['data' => []]);
         }
         $cols = Schema::getColumnListing('cuentas_bancarias');
-        // helper para escoger nombre de columna flexible
-        $pickCol = function(array $candidates) use ($cols) {
-            foreach ($candidates as $c) if (in_array($c, $cols)) return $c;
-            foreach ($cols as $col) foreach ($candidates as $c) if (stripos($col, $c) !== false) return $col;
-            return null;
-        };
-        $saldoCol = $pickCol(['saldo', 'saldo_inicial', 'saldoInicial', 'initial_balance']);
         // incluir id_sucursal y nombre de sucursal si existe la tabla
-        $selectCols = ['cuentas_bancarias.id', 'cuentas_bancarias.banco', 'cuentas_bancarias.numero_cuenta', 'cuentas_bancarias.tipo_cuenta', 'cuentas_bancarias.created_at', 'cuentas_bancarias.id_sucursal'];
-        if ($saldoCol) $selectCols[] = 'cuentas_bancarias.'.$saldoCol . ' as saldo';
-        $query = DB::table('cuentas_bancarias')->select($selectCols);
+        $query = DB::table('cuentas_bancarias')->select('cuentas_bancarias.id', 'cuentas_bancarias.banco', 'cuentas_bancarias.numero_cuenta', 'cuentas_bancarias.tipo_cuenta', 'cuentas_bancarias.saldo_inicial', 'cuentas_bancarias.created_at', 'cuentas_bancarias.id_sucursal');
         if (Schema::hasTable('sucursales')) {
             $query->leftJoin('sucursales', 'cuentas_bancarias.id_sucursal', '=', 'sucursales.id')
                   ->addSelect('sucursales.nombre as sucursal_nombre');
         }
-        // ordenar cuentas: por created_at desc si existe, sino por id desc
-        if (in_array('created_at', $cols)) {
-            $query->orderBy('cuentas_bancarias.created_at', 'desc');
-        } else {
-            $query->orderBy('cuentas_bancarias.id', 'desc');
-        }
         $cuentas = $query->get();
         return response()->json(['data' => $cuentas]);
-    }
-
-    // Recalcula el saldo para una cuenta y lo guarda en `cuentas_bancarias` si existe la columna
-    protected function recomputeAndSaveSaldoForAccount($accountId)
-    {
-        if (!$accountId) return;
-        // columnas de movimientos
-        if (!Schema::hasTable('movimientos_banco')) return;
-        $cols = Schema::getColumnListing('movimientos_banco');
-        $pick = function(array $candidates) use ($cols) {
-            foreach ($candidates as $c) if (in_array($c, $cols)) return $c;
-            foreach ($cols as $col) foreach ($candidates as $c) if (stripos($col, $c) !== false) return $col;
-            return null;
-        };
-
-        $typeCol = $pick(['tipo', 'tipo_movimiento', 'movement_type', 'type']);
-        $amountCol = $pick(['monto', 'valor', 'importe', 'amount']);
-        $accountCol = $pick(['cuenta_id', 'cuenta', 'cuentaId', 'account_id']);
-        $deletedCol = $pick(['deleted_at', 'deletedAt']);
-
-        if (!$typeCol || !$amountCol || !$accountCol) return;
-
-        // patrones según definición de columna de tipo
-        $positivePatterns = ['CRED'];
-        $negativePatterns = ['DEBIT'];
-        try {
-            $colInfo = DB::select("SHOW COLUMNS FROM movimientos_banco WHERE Field = ?", [$typeCol]);
-            if (!empty($colInfo) && isset($colInfo[0]->Type)) {
-                $typeDef = strtoupper($colInfo[0]->Type);
-                if (strpos($typeDef, 'INGRESO') !== false || strpos($typeDef, 'EGRESO') !== false) {
-                    $positivePatterns = ['INGRESO'];
-                    $negativePatterns = ['EGRESO'];
-                } elseif (strpos($typeDef, 'CREDITO') !== false || strpos($typeDef, 'DEBITO') !== false) {
-                    $positivePatterns = ['CRED'];
-                    $negativePatterns = ['DEBIT'];
-                }
-            }
-        } catch (\Exception $ex) {
-            // ignore
-        }
-
-        $whenClauses = [];
-        foreach ($positivePatterns as $p) $whenClauses[] = "WHEN `".$typeCol."` LIKE '%".$p."%' THEN `".$amountCol."`";
-        foreach ($negativePatterns as $p) $whenClauses[] = "WHEN `".$typeCol."` LIKE '%".$p."%' THEN -`".$amountCol."`";
-        $sql = "COALESCE(SUM(CASE " . implode(' ', $whenClauses) . " ELSE 0 END),0) as saldo";
-
-        $query = DB::table('movimientos_banco')->selectRaw($sql)->where($accountCol, $accountId);
-        if ($deletedCol) $query->whereNull('movimientos_banco.'.$deletedCol);
-        $saldo = (float)$query->value('saldo');
-
-        // actualizar cuentas_bancarias.saldo (detectar nombre de columna flexible)
-        if (!Schema::hasTable('cuentas_bancarias')) return;
-        $colsCuenta = Schema::getColumnListing('cuentas_bancarias');
-        $pickCuenta = function(array $candidates) use ($colsCuenta) {
-            foreach ($candidates as $c) if (in_array($c, $colsCuenta)) return $c;
-            foreach ($colsCuenta as $col) foreach ($candidates as $c) if (stripos($col, $c) !== false) return $col;
-            return null;
-        };
-        $saldoColCuenta = $pickCuenta(['saldo', 'saldo_inicial', 'saldoInicial', 'balance']);
-        $idColCuenta = $pickCuenta(['id', 'cuenta_id']);
-        if (!$saldoColCuenta) return;
-        $update = [$saldoColCuenta => $saldo];
-        if (in_array('updated_at', $colsCuenta)) $update['updated_at'] = now();
-        $idCol = $idColCuenta ?? 'id';
-        try {
-            DB::table('cuentas_bancarias')->where($idCol, $accountId)->update($update);
-        } catch (\Exception $ex) {
-            Log::error('BancoController.recomputeAndSaveSaldoForAccount: error updating cuenta', ['ex' => $ex->getMessage(), 'accountId' => $accountId, 'saldo' => $saldo]);
-        }
     }
 
     // Crear nueva cuenta bancaria
@@ -131,7 +47,7 @@ class BancoController extends Controller
             'tipo_cuenta' => $pick(['tipo_cuenta', 'tipo', 'account_type']),
             'numero_cuenta' => $pick(['numero_cuenta', 'numero', 'numeroCuenta', 'account_number']),
             'id_sucursal' => $pick(['id_sucursal', 'idSucursal', 'sucursal_id', 'cuenta_sucursal', 'sucursal']),
-            'saldo' => $pick(['saldo', 'saldo_inicial', 'saldoInicial', 'initial_balance']),
+            'saldo_inicial' => $pick(['saldo_inicial', 'saldo', 'saldoInicial', 'initial_balance']),
             'observaciones' => $pick(['observaciones', 'observacion', 'notes', 'descripcion'])
         ];
 
@@ -140,7 +56,7 @@ class BancoController extends Controller
         foreach ($mapping as $key => $col) {
             if ($col && isset($data[$key])) {
                 $val = $data[$key];
-                if ($key === 'saldo' && $val !== null) $val = (float)$val;
+                if ($key === 'saldo_inicial' && $val !== null) $val = (float)$val;
                 if ($key === 'id_sucursal') $val = intval($val);
                 $insert[$col] = $val;
             }
@@ -256,13 +172,7 @@ class BancoController extends Controller
             if ($request->query('cuenta_id')) $query->where('movimientos_banco.'.$accountCol, $request->query('cuenta_id'));
         }
         if (in_array('deleted_at', $cols)) $query->whereNull('movimientos_banco.deleted_at');
-        if ($dateCol) {
-            $query->orderBy('movimientos_banco.'.$dateCol, 'desc')
-                  ->orderBy('movimientos_banco.id', 'desc');
-        } else {
-            // Si no hay columna de fecha, ordenar por id descendente (último creado primero)
-            $query->orderBy('movimientos_banco.id', 'desc');
-        }
+        if ($dateCol) $query->orderBy('movimientos_banco.'.$dateCol, 'desc');
 
         $mov = $query->get();
         return response()->json(['data' => $mov]);
@@ -395,19 +305,6 @@ class BancoController extends Controller
         $q = DB::table('movimientos_banco')->where('id', $id);
         if (in_array('deleted_at', $cols)) $q->whereNull('movimientos_banco.deleted_at');
         $mov = $q->first();
-        // Recalcular saldo para la cuenta afectada: verificar cuenta original y nueva
-        try {
-            $accountCol = $mapping['cuenta_id'] ?? null;
-            $original = DB::table('movimientos_banco')->where('id', $id)->first();
-            $originalAccount = $original && $accountCol && isset($original->{$accountCol}) ? $original->{$accountCol} : null;
-            $newAccount = null;
-            if ($accountCol && array_key_exists($accountCol, $update)) $newAccount = $update[$accountCol];
-            // si cambió cuenta, recomputar para ambas
-            if ($originalAccount) $this->recomputeAndSaveSaldoForAccount($originalAccount);
-            if ($newAccount && $newAccount != $originalAccount) $this->recomputeAndSaveSaldoForAccount($newAccount);
-        } catch (\Exception $ex) {
-            Log::error('BancoController.updateMovimiento: error recalculando saldo', ['ex' => $ex->getMessage()]);
-        }
         return response()->json(['data' => $mov]);
     }
 
@@ -430,7 +327,7 @@ class BancoController extends Controller
         } else {
             return response()->json(['data' => []]);
         }
-        if ($dateCol) $query->orderBy('movimientos_banco.'.$dateCol, 'desc')->orderBy('movimientos_banco.id', 'desc');
+        if ($dateCol) $query->orderBy('movimientos_banco.'.$dateCol, 'desc');
         $rows = $query->get();
         return response()->json(['data' => $rows]);
     }
@@ -573,16 +470,6 @@ class BancoController extends Controller
         $q = DB::table('movimientos_banco')->orderBy('movimientos_banco.id', 'desc');
         if (in_array('deleted_at', $cols)) $q->whereNull('movimientos_banco.deleted_at');
         $mov = $q->first();
-        // Recalcular saldo y guardarlo en la cuenta asociada (si aplica)
-        try {
-            $accountCol = $mapping['cuenta_id'] ?? null;
-            $accountId = null;
-            if ($accountCol && array_key_exists($accountCol, $insert)) $accountId = $insert[$accountCol];
-            elseif ($mov && isset($mov->{$accountCol})) $accountId = $mov->{$accountCol};
-            if ($accountId) $this->recomputeAndSaveSaldoForAccount($accountId);
-        } catch (\Exception $ex) {
-            Log::error('BancoController.storeMovimiento: error recalculando saldo', ['ex' => $ex->getMessage()]);
-        }
         return response()->json(['data' => $mov], 201);
     }
 
@@ -594,40 +481,11 @@ class BancoController extends Controller
             if (in_array('deleted_at', $cols)) {
                 DB::table('movimientos_banco')->where('id', $id)->update(['deleted_at' => now()]);
             } else {
-                // obtener cuenta antes de borrar
-                $accountCol = null;
-                $pick = function(array $candidates) use ($cols) {
-                    foreach ($candidates as $c) if (in_array($c, $cols)) return $c;
-                    foreach ($cols as $col) foreach ($candidates as $c) if (stripos($col, $c) !== false) return $col;
-                    return null;
-                };
-                $accountCol = $pick(['cuenta_id', 'cuenta', 'cuentaId', 'account_id']);
-                $mov = null;
-                if ($accountCol) $mov = DB::table('movimientos_banco')->where('id', $id)->first();
                 DB::table('movimientos_banco')->where('id', $id)->delete();
-                if ($mov && isset($mov->{$accountCol})) $this->recomputeAndSaveSaldoForAccount($mov->{$accountCol});
             }
         } catch (QueryException $ex) {
             Log::error('BancoController: error eliminar movimiento', ['ex' => $ex->getMessage(), 'id' => $id]);
             return response()->json(['message' => 'Error al eliminar', 'error' => $ex->getMessage()], 500);
-        }
-        // Si usamos soft-delete, también recomputar saldo
-        try {
-            if (in_array('deleted_at', $cols)) {
-                $pick = function(array $candidates) use ($cols) {
-                    foreach ($candidates as $c) if (in_array($c, $cols)) return $c;
-                    foreach ($cols as $col) foreach ($candidates as $c) if (stripos($col, $c) !== false) return $col;
-                    return null;
-                };
-                $accountCol = $pick(['cuenta_id', 'cuenta', 'cuentaId', 'account_id']);
-                if ($accountCol) {
-                    // obtener el movimiento ahora marcado como deleted
-                    $mov2 = DB::table('movimientos_banco')->where('id', $id)->first();
-                    if ($mov2 && isset($mov2->{$accountCol})) $this->recomputeAndSaveSaldoForAccount($mov2->{$accountCol});
-                }
-            }
-        } catch (\Exception $ex) {
-            Log::error('BancoController.destroyMovimiento: error recalculando saldo', ['ex' => $ex->getMessage()]);
         }
         return response()->json(['message' => 'Eliminado']);
     }

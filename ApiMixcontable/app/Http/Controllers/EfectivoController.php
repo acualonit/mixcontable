@@ -78,25 +78,6 @@ class EfectivoController extends Controller
 
         // incluir nombre de usuario si existe tabla users (construir COALESCE solo con columnas existentes)
         $userCols = Schema::hasTable('users') ? Schema::getColumnListing('users') : [];
-
-        // intentar detectar columna que referencia sucursal (id) en movimientos_caja
-        $branchIdCol = null;
-        foreach (['sucursal_id', 'id_sucursal', 'branch_id', 'branch'] as $cand) {
-            if (in_array($cand, $cols)) { $branchIdCol = $cand; break; }
-        }
-
-        // preparar expresión para mostrar nombre de sucursal
-        $sucursalExpr = "'' as sucursal";
-        if (in_array('sucursal', $cols)) {
-            $sucursalExpr = 'movimientos_caja.sucursal as sucursal';
-        }
-
-        // si hay columna id de sucursal y existe tabla sucursales, hacer leftJoin para resolver nombre
-        $joinSucursales = false;
-        if ($branchIdCol && Schema::hasTable('sucursales')) {
-            $joinSucursales = true;
-        }
-
         if (!empty($userCols)) {
             $candidates = [];
             foreach (['name', 'nombre', 'nombre_completo', 'email'] as $uc) {
@@ -106,29 +87,10 @@ class EfectivoController extends Controller
             if (!empty($candidates)) {
                 $selectUserExpr = 'COALESCE(' . implode(', ', $candidates) . ') as usuario_nombre';
             }
-            $query->leftJoin('users', 'movimientos_caja.user_id', '=', 'users.id');
-            if ($joinSucursales) {
-                $query->leftJoin('sucursales', 'movimientos_caja.' . $branchIdCol, '=', 'sucursales.id');
-                // preferir columna movimientos_caja.sucursal si existe, sino sucursales.nombre
-                if ($sucursalExpr === "'' as sucursal") {
-                    $sucursalExpr = 'COALESCE(sucursales.nombre, "") as sucursal';
-                } else {
-                    $sucursalExpr = 'COALESCE(movimientos_caja.sucursal, sucursales.nombre, "") as sucursal';
-                }
-            }
-            $query->select('movimientos_caja.*', DB::raw($selectUserExpr), DB::raw($sucursalExpr));
+            $query->leftJoin('users', 'movimientos_caja.user_id', '=', 'users.id')
+                  ->select('movimientos_caja.*', DB::raw($selectUserExpr));
         } else {
-            if ($joinSucursales) {
-                $query->leftJoin('sucursales', 'movimientos_caja.' . $branchIdCol, '=', 'sucursales.id');
-                if ($sucursalExpr === "'' as sucursal") {
-                    $sucursalExpr = 'COALESCE(sucursales.nombre, "") as sucursal';
-                } else {
-                    $sucursalExpr = 'COALESCE(movimientos_caja.sucursal, sucursales.nombre, "") as sucursal';
-                }
-                $query->select('movimientos_caja.*', DB::raw($sucursalExpr));
-            } else {
-                $query->select('movimientos_caja.*');
-            }
+            $query->select('movimientos_caja.*');
         }
 
         $movimientos = $query->get();
@@ -168,23 +130,6 @@ class EfectivoController extends Controller
 
         // incluir nombre de usuario si existe tabla users (construir COALESCE solo con columnas existentes)
         $userCols = Schema::hasTable('users') ? Schema::getColumnListing('users') : [];
-
-        // intentar detectar columna que referencia sucursal (id) en movimientos_caja
-        $branchIdCol = null;
-        foreach (['sucursal_id', 'id_sucursal', 'branch_id', 'branch'] as $cand) {
-            if (in_array($cand, $cols)) { $branchIdCol = $cand; break; }
-        }
-
-        $sucursalExpr = "'' as sucursal";
-        if (in_array('sucursal', $cols)) {
-            $sucursalExpr = 'movimientos_caja.sucursal as sucursal';
-        }
-
-        $joinSucursales = false;
-        if ($branchIdCol && Schema::hasTable('sucursales')) {
-            $joinSucursales = true;
-        }
-
         if (!empty($userCols)) {
             $candidates = [];
             foreach (['name', 'nombre', 'nombre_completo', 'email'] as $uc) {
@@ -194,28 +139,10 @@ class EfectivoController extends Controller
             if (!empty($candidates)) {
                 $selectUserExpr = 'COALESCE(' . implode(', ', $candidates) . ') as usuario_nombre';
             }
-            $query->leftJoin('users', 'movimientos_caja.user_id', '=', 'users.id');
-            if ($joinSucursales) {
-                $query->leftJoin('sucursales', 'movimientos_caja.' . $branchIdCol, '=', 'sucursales.id');
-                if ($sucursalExpr === "'' as sucursal") {
-                    $sucursalExpr = 'COALESCE(sucursales.nombre, "") as sucursal';
-                } else {
-                    $sucursalExpr = 'COALESCE(movimientos_caja.sucursal, sucursales.nombre, "") as sucursal';
-                }
-            }
-            $query->select('movimientos_caja.*', DB::raw($selectUserExpr), DB::raw($sucursalExpr));
+            $query->leftJoin('users', 'movimientos_caja.user_id', '=', 'users.id')
+                  ->select('movimientos_caja.*', DB::raw($selectUserExpr));
         } else {
-            if ($joinSucursales) {
-                $query->leftJoin('sucursales', 'movimientos_caja.' . $branchIdCol, '=', 'sucursales.id');
-                if ($sucursalExpr === "'' as sucursal") {
-                    $sucursalExpr = 'COALESCE(sucursales.nombre, "") as sucursal';
-                } else {
-                    $sucursalExpr = 'COALESCE(movimientos_caja.sucursal, sucursales.nombre, "") as sucursal';
-                }
-                $query->select('movimientos_caja.*', DB::raw($sucursalExpr));
-            } else {
-                $query->select('movimientos_caja.*');
-            }
+            $query->select('movimientos_caja.*');
         }
 
         $rows = $query->get();
@@ -287,21 +214,6 @@ class EfectivoController extends Controller
             }
         }
 
-        // Si se detectó columna de sucursal pero no se proporcionó en payload,
-        // intentar obtenerla desde el usuario autenticado si tiene asignada una sucursal
-        if (!empty($mapping['sucursal']) && empty($insert[$mapping['sucursal']])) {
-            try {
-                $authUser = $request->user();
-                if ($authUser) {
-                    if (isset($authUser->id_sucursal)) $insert[$mapping['sucursal']] = $authUser->id_sucursal;
-                    elseif (isset($authUser->sucursal)) $insert[$mapping['sucursal']] = $authUser->sucursal;
-                    elseif (isset($authUser->sucursal_id)) $insert[$mapping['sucursal']] = $authUser->sucursal_id;
-                }
-            } catch (\Throwable $e) {
-                // ignorar
-            }
-        }
-
         // Asegurar valor válido para enum tipo_movimiento: la tabla usa 'EGRESO'/'INGRESO'
         if (!empty($mapping['tipo']) && isset($data['tipo'])) {
             $typeColName = $mapping['tipo'];
@@ -352,23 +264,6 @@ class EfectivoController extends Controller
 
         // incluir nombre de usuario si existe tabla users (construir COALESCE solo con columnas existentes)
         $userCols = Schema::hasTable('users') ? Schema::getColumnListing('users') : [];
-
-        // intentar detectar columna que referencia sucursal (id) en movimientos_caja
-        $branchIdCol = null;
-        foreach (['sucursal_id', 'id_sucursal', 'branch_id', 'branch'] as $cand) {
-            if (in_array($cand, $cols)) { $branchIdCol = $cand; break; }
-        }
-
-        $sucursalExpr = "'' as sucursal";
-        if (in_array('sucursal', $cols)) {
-            $sucursalExpr = 'movimientos_caja.sucursal as sucursal';
-        }
-
-        $joinSucursales = false;
-        if ($branchIdCol && Schema::hasTable('sucursales')) {
-            $joinSucursales = true;
-        }
-
         if (!empty($userCols)) {
             $candidates = [];
             foreach (['name', 'nombre', 'nombre_completo', 'email'] as $uc) {
@@ -378,28 +273,10 @@ class EfectivoController extends Controller
             if (!empty($candidates)) {
                 $selectUserExpr = 'COALESCE(' . implode(', ', $candidates) . ') as usuario_nombre';
             }
-            $q->leftJoin('users', 'movimientos_caja.user_id', '=', 'users.id');
-            if ($joinSucursales) {
-                $q->leftJoin('sucursales', 'movimientos_caja.' . $branchIdCol, '=', 'sucursales.id');
-                if ($sucursalExpr === "'' as sucursal") {
-                    $sucursalExpr = 'COALESCE(sucursales.nombre, "") as sucursal';
-                } else {
-                    $sucursalExpr = 'COALESCE(movimientos_caja.sucursal, sucursales.nombre, "") as sucursal';
-                }
-            }
-            $q->select('movimientos_caja.*', DB::raw($selectUserExpr), DB::raw($sucursalExpr));
+            $q->leftJoin('users', 'movimientos_caja.user_id', '=', 'users.id')
+              ->select('movimientos_caja.*', DB::raw($selectUserExpr));
         } else {
-            if ($joinSucursales) {
-                $q->leftJoin('sucursales', 'movimientos_caja.' . $branchIdCol, '=', 'sucursales.id');
-                if ($sucursalExpr === "'' as sucursal") {
-                    $sucursalExpr = 'COALESCE(sucursales.nombre, "") as sucursal';
-                } else {
-                    $sucursalExpr = 'COALESCE(movimientos_caja.sucursal, sucursales.nombre, "") as sucursal';
-                }
-                $q->select('movimientos_caja.*', DB::raw($sucursalExpr));
-            } else {
-                $q->select('movimientos_caja.*');
-            }
+            $q->select('movimientos_caja.*');
         }
 
         $mov = $q->first();
@@ -487,25 +364,8 @@ class EfectivoController extends Controller
             }
         }
 
-        // intentar devolver también nombre de usuario y sucursal si existen tablas/columnas
+        // intentar devolver también nombre de usuario si existe tabla users
         $userCols = Schema::hasTable('users') ? Schema::getColumnListing('users') : [];
-
-        // detectar columna id de sucursal
-        $branchIdCol = null;
-        foreach (['sucursal_id', 'id_sucursal', 'branch_id', 'branch'] as $cand) {
-            if (in_array($cand, $cols)) { $branchIdCol = $cand; break; }
-        }
-
-        $sucursalExpr = "'' as sucursal";
-        if (in_array('sucursal', $cols)) {
-            $sucursalExpr = 'movimientos_caja.sucursal as sucursal';
-        }
-
-        $joinSucursales = false;
-        if ($branchIdCol && Schema::hasTable('sucursales')) {
-            $joinSucursales = true;
-        }
-
         if (!empty($userCols)) {
             $candidates = [];
             foreach (['name', 'nombre', 'nombre_completo', 'email'] as $uc) {
@@ -515,31 +375,13 @@ class EfectivoController extends Controller
             if (!empty($candidates)) {
                 $selectUserExpr = 'COALESCE(' . implode(', ', $candidates) . ') as usuario_nombre';
             }
-
-            $q = DB::table('movimientos_caja')
+            $mov = DB::table('movimientos_caja')
                 ->leftJoin('users', 'movimientos_caja.user_id', '=', 'users.id')
-                ->where('movimientos_caja.id', $id);
-            if ($joinSucursales) {
-                $q->leftJoin('sucursales', 'movimientos_caja.' . $branchIdCol, '=', 'sucursales.id');
-                if ($sucursalExpr === "'' as sucursal") {
-                    $sucursalExpr = 'COALESCE(sucursales.nombre, "") as sucursal';
-                } else {
-                    $sucursalExpr = 'COALESCE(movimientos_caja.sucursal, sucursales.nombre, "") as sucursal';
-                }
-                $mov = $q->select('movimientos_caja.*', DB::raw($selectUserExpr), DB::raw($sucursalExpr))->first();
-            } else {
-                $mov = $q->select('movimientos_caja.*', DB::raw($selectUserExpr))->first();
-            }
+                ->where('movimientos_caja.id', $id)
+                ->select('movimientos_caja.*', DB::raw($selectUserExpr))
+                ->first();
         } else {
-            if ($joinSucursales) {
-                $mov = DB::table('movimientos_caja')
-                    ->leftJoin('sucursales', 'movimientos_caja.' . $branchIdCol, '=', 'sucursales.id')
-                    ->where('movimientos_caja.id', $id)
-                    ->select('movimientos_caja.*', DB::raw($sucursalExpr))
-                    ->first();
-            } else {
-                $mov = DB::table('movimientos_caja')->where('id', $id)->first();
-            }
+            $mov = DB::table('movimientos_caja')->where('id', $id)->first();
         }
 
         return response()->json(['data' => $mov]);

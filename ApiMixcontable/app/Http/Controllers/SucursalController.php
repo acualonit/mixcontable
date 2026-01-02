@@ -5,7 +5,6 @@ namespace App\Http\Controllers;
 use App\Models\Empresa;
 use App\Models\Sucursal;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 
 class SucursalController extends Controller
 {
@@ -48,19 +47,9 @@ class SucursalController extends Controller
     // Listar todas las sucursales (sin filtrar por empresa)
     public function all()
     {
-        // Log para depuración: origen de la petición y si hay usuario autenticado
-        try {
-            Log::info('GET /api/public/sucursales called', [
-                'ip' => request()->ip(),
-                'has_user' => auth()->check() ?? false,
-            ]);
-        } catch (\Throwable $e) {
-            // evitar que falle si auth() no está disponible
-            Log::info('GET /api/public/sucursales called (log fallback)');
-        }
-
-        $list = Sucursal::orderBy('nombre')->get();
-        return response()->json($list);
+        return response()->json(
+            Sucursal::orderBy('nombre')->get()
+        );
     }
 
     private function validateSucursal(Request $request): array

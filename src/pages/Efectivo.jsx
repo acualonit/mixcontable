@@ -1,17 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { fetchSaldo, fetchMovimientos, createMovimiento, updateMovimiento, deleteMovimiento, fetchDeletedMovimientos, fetchUsuarios } from '../utils/efectivoApi';
-import { fetchSucursales } from '../utils/bancoApi';
+import { fetchSaldo, fetchMovimientos, createMovimiento, updateMovimiento, deleteMovimiento, fetchDeletedMovimientos } from '../utils/efectivoApi';
 
 function Efectivo() {
   const [showNuevoMovimiento, setShowNuevoMovimiento] = useState(false);
   const [filtroFecha, setFiltroFecha] = useState('');
-  const [filtroSucursal, setFiltroSucursal] = useState('');
   const [nuevoMovimiento, setNuevoMovimiento] = useState({
     fecha: new Date().toISOString().split('T')[0],
     valor: '',
     detalle: '',
-    tipo: 'ingreso',
-    sucursal: ''
+    tipo: 'ingreso'
   });
   const [editingId, setEditingId] = useState(null);
   const [showViewMovimiento, setShowViewMovimiento] = useState(false);
@@ -22,8 +19,6 @@ function Efectivo() {
   const [movimientos, setMovimientos] = useState([]);
   const [usersMap, setUsersMap] = useState({});
   const [loading, setLoading] = useState(false);
-
-  const [sucursales, setSucursales] = useState([]);
 
   useEffect(() => {
     const load = async () => {
@@ -45,13 +40,6 @@ function Efectivo() {
           // ignore users load error
           setUsersMap({});
         }
-        // cargar sucursales para selector
-        try {
-          const sr = await fetchSucursales();
-          setSucursales(sr || sr?.data || sr?.sucursales || []);
-        } catch (se) {
-          setSucursales([]);
-        }
       } catch (err) {
         console.error('Error cargando efectivo:', err);
       } finally {
@@ -60,8 +48,6 @@ function Efectivo() {
     };
     load();
   }, []);
-
-  
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -75,9 +61,6 @@ function Efectivo() {
           monto: parseFloat(nuevoMovimiento.valor),
           caja_id: 1
         };
-        if (nuevoMovimiento.sucursal) {
-          payload.sucursal = Number(nuevoMovimiento.sucursal);
-        }
         if (editingId) {
           await updateMovimiento(editingId, payload);
         } else {
@@ -100,18 +83,11 @@ function Efectivo() {
 
   const handleEdit = (m) => {
     setEditingId(m.id);
-    // determinar id de sucursal para rellenar el select
-    let sucId = m.sucursal_id ?? m.id_sucursal ?? m.branch_id ?? m.cuenta_sucursal ?? null;
-    if (!sucId && m.sucursal && sucursales && sucursales.length) {
-      const found = sucursales.find(x => (x.nombre || '').toString().trim().toLowerCase() === (m.sucursal || '').toString().trim().toLowerCase());
-      if (found) sucId = found.id;
-    }
     setNuevoMovimiento({
       fecha: m.fecha,
       valor: m.monto,
       detalle: m.detalle ?? m.descripcion ?? '',
-      tipo: (m.tipo ?? m.tipo_movimiento ?? '').toString().toLowerCase().includes('ingreso') ? 'ingreso' : 'egreso',
-      sucursal: sucId ?? ''
+      tipo: (m.tipo ?? m.tipo_movimiento ?? '').toString().toLowerCase().includes('ingreso') ? 'ingreso' : 'egreso'
     });
     setShowNuevoMovimiento(true);
   };
@@ -137,20 +113,7 @@ function Efectivo() {
 
   // Filtrado y cálculo de saldo acumulado (running balance) para la tabla
   const computeFilteredAndTotals = () => {
-    // Ordenar movimientos por fecha descendente (más reciente primero)
-    const sortedMovimientos = [...movimientos].sort((a, b) => {
-      // Si tienen campo de fecha y es string tipo yyyy-mm-dd
-      if (a.fecha && b.fecha) {
-        if (a.fecha > b.fecha) return -1;
-        if (a.fecha < b.fecha) return 1;
-      }
-      // Si tienen id numérico, usar id como fallback
-      if (a.id && b.id) {
-        return b.id - a.id;
-      }
-      return 0;
-    });
-    const filtered = sortedMovimientos.filter(m => {
+    const filtered = movimientos.filter(m => {
       const raw = filtroFecha ?? '';
       const f = raw.toString().trim();
       // tratar placeholders o textos como vacíos
@@ -168,28 +131,8 @@ function Efectivo() {
       return (m.fecha || '').toString().startsWith(want);
     });
 
-    // aplicar filtro por sucursal si está seleccionado
-    const filteredBySucursal = filtered.filter(m => {
-      if (!filtroSucursal) return true;
-      // preferir comparar por id si el movimiento tiene campo id de sucursal
-      const movId = m.sucursal_id ?? m.id_sucursal ?? m.branch_id ?? m.cuenta_sucursal;
-      if (movId) {
-        return String(movId) === String(filtroSucursal);
-      }
-      // si no hay id, comparar por nombre
-      let movSuc = m.sucursal ?? m.sucursal_nombre ?? m.cuenta_sucursal_nombre ?? '';
-      if (!movSuc && sucursales && sucursales.length) {
-        // intentar resolver id->nombre
-        const s = sucursales.find(x => String(x.id) === String(movId));
-        if (s) movSuc = s.nombre;
-      }
-      if (!movSuc) return false;
-      const selected = (sucursales.find(x => String(x.id) === String(filtroSucursal)) || {}).nombre ?? filtroSucursal;
-      return movSuc.toString().trim().toLowerCase() === selected.toString().trim().toLowerCase();
-    });
-
     let running = 0;
-    const rows = filteredBySucursal.map((m) => {
+    const rows = filtered.map((m) => {
       const detalle = m.detalle ?? m.descripcion ?? m.description ?? '';
       const tipoRaw = (m.tipo ?? m.tipo_movimiento ?? m.movement_type ?? '').toString();
       const tipoNorm = tipoRaw.toLowerCase();
@@ -259,17 +202,7 @@ function Efectivo() {
                   <dd className="col-sm-8">{new Intl.NumberFormat('es-CL').format(viewMovimiento.monto)}</dd>
 
                   <dt className="col-sm-4">Sucursal</dt>
-                  <dd className="col-sm-8">{(() => {
-                    let ds = viewMovimiento.sucursal ?? '';
-                    if (!ds) {
-                      const id = viewMovimiento.sucursal_id ?? viewMovimiento.id_sucursal ?? viewMovimiento.branch_id ?? viewMovimiento.cuenta_sucursal;
-                      if (id && sucursales && sucursales.length) {
-                        const s = sucursales.find(x => String(x.id) === String(id));
-                        if (s) ds = s.nombre;
-                      }
-                    }
-                    return ds || '';
-                  })()}</dd>
+                  <dd className="col-sm-8">{viewMovimiento.sucursal ?? ''}</dd>
 
                   <dt className="col-sm-4">Usuario</dt>
                   <dd className="col-sm-8">{(viewMovimiento.usuario_nombre ?? (usersMap[String(viewMovimiento.user_id ?? viewMovimiento.userId ?? viewMovimiento.usuario ?? viewMovimiento.user ?? viewMovimiento.origen)] ?? viewMovimiento.usuario ?? viewMovimiento.user ?? viewMovimiento.origen ?? ''))}</dd>
@@ -382,19 +315,6 @@ function Efectivo() {
                     />
                   </div>
                   <div className="mb-3">
-                    <label className="form-label">Sucursal</label>
-                    <select
-                      className="form-select"
-                      value={nuevoMovimiento.sucursal}
-                      onChange={(e) => setNuevoMovimiento({ ...nuevoMovimiento, sucursal: e.target.value })}
-                    >
-                      <option value="">Seleccionar sucursal</option>
-                      {sucursales.map(s => (
-                        <option key={s.id} value={s.id}>{s.nombre}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="mb-3">
                     <label className="form-label">Valor</label>
                     <input
                       type="number"
@@ -468,18 +388,6 @@ function Efectivo() {
                 <button type="button" className="btn btn-outline-secondary ms-2 btn-sm" onClick={() => setFiltroFecha('')} title="Limpiar filtro">Limpiar</button>
               </div>
             </div>
-            <div className="col-md-4">
-              <label className="form-label mb-0">Sucursal</label>
-              <div className="d-flex">
-                <select className="form-select" value={filtroSucursal} onChange={(e) => setFiltroSucursal(e.target.value)}>
-                  <option value="">Todas las sucursales</option>
-                  {sucursales.map(s => (
-                    <option key={s.id} value={s.id}>{s.nombre}</option>
-                  ))}
-                </select>
-                <button type="button" className="btn btn-outline-secondary ms-2 btn-sm" onClick={() => setFiltroSucursal('')} title="Limpiar filtro">Limpiar</button>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -496,6 +404,7 @@ function Efectivo() {
                   <th>Fecha</th>
                   <th>Detalle</th>
                   <th>Tipo de Movimiento</th>
+                  <th>Categoría</th>
                   <th>Sucursal</th>
                   <th>Monto</th>
                   <th>Saldo</th>
@@ -506,12 +415,12 @@ function Efectivo() {
               <tbody>
                 {movimientos.length === 0 && (
                   <tr>
-                    <td colSpan="8" className="text-center">No hay movimientos.</td>
+                    <td colSpan="9" className="text-center">No hay movimientos.</td>
                   </tr>
                 )}
                 {filteredRows.length === 0 ? (
                   <tr>
-                    <td colSpan="8" className="text-center">No hay movimientos.</td>
+                    <td colSpan="9" className="text-center">No hay movimientos.</td>
                   </tr>
                 ) : (
                   filteredRows.map(({ row: m, detalle, isIngreso, usuarioShow, monto, running }) => {
@@ -526,17 +435,8 @@ function Efectivo() {
                         <td>{m.fecha}</td>
                         <td>{detalle}</td>
                         <td>{isIngreso ? <span className="badge bg-success">Ingreso</span> : <span className="badge bg-danger">Egreso</span>}</td>
-                        <td>{(() => {
-                          let ds = m.sucursal ?? '';
-                          if (!ds) {
-                            const id = m.sucursal_id ?? m.id_sucursal ?? m.branch_id ?? m.cuenta_sucursal;
-                            if (id && sucursales && sucursales.length) {
-                              const s = sucursales.find(x => String(x.id) === String(id));
-                              if (s) ds = s.nombre;
-                            }
-                          }
-                          return ds || '';
-                        })()}</td>
+                        <td>{m.categoria ?? ''}</td>
+                        <td>{m.sucursal ?? ''}</td>
                         <td className={isIngreso ? 'text-success' : 'text-danger'}>{new Intl.NumberFormat('es-CL').format(monto)}</td>
                         <td className={running >= 0 ? 'text-success' : 'text-danger'}>{new Intl.NumberFormat('es-CL').format(running)}</td>
                         <td>{displayUser}</td>
@@ -558,10 +458,9 @@ function Efectivo() {
               </tbody>
               <tfoot className="table-light">
                 <tr className="fw-bold">
-                  <td colSpan="5">TOTAL</td>
+                  <td colSpan="6">TOTAL</td>
                   <td>{new Intl.NumberFormat('es-CL').format(totalAcumulado)}</td>
-                  <td></td>
-                  <td></td>
+                  <td colSpan="2"></td>
                 </tr>
               </tfoot>
             </table>

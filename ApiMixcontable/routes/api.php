@@ -8,10 +8,8 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\EmpresaController;
 use App\Http\Controllers\RespaldosController;
 use App\Http\Controllers\SucursalController;
-use App\Http\Controllers\VentasController;
 use App\Http\Controllers\UserManagementController;
 use App\Http\Controllers\EfectivoController;
-use App\Http\Controllers\BancoController;
 use App\Models\User;
 
 /*
@@ -22,22 +20,6 @@ use App\Models\User;
 | Aquí se registran las rutas de la API para MIXCONTABLE.
 |
 */
-
-// Ruta pública para listar sucursales en entorno local (útil para frontend sin sesión)
-// Ruta pública (sin autenticación) para listar sucursales. Útil para el frontend.
-// En producción podrías eliminarla o protegerla con middleware.
-Route::get('/sucursales', [SucursalController::class, 'all']);
-
-// Endpoint público dedicado para debug de frontend (evita conflictos con rutas protegidas)
-Route::get('/public/sucursales', [SucursalController::class, 'all']);
-
-// Debug: últimas entradas de métodos de pago (solo funciona si el controlador permite mostrar en local)
-Route::get('/debug/venta-metodos', [VentasController::class, 'debugMetodos']);
-
-// Ruta pública para listar sucursales en entorno local (útil para frontend sin sesión)
-if (env('APP_ENV') === 'local' || env('APP_DEBUG')) {
-    Route::get('/sucursales', [SucursalController::class, 'all']);
-}
 
 Route::middleware('session')->group(function () {
     // Login de usuarios
@@ -82,17 +64,6 @@ Route::middleware('session')->group(function () {
         ]]);
     });
 
-    // Rutas de ventas accesibles en desarrollo/sin autenticación para facilitar pruebas
-    Route::get('/ventas', [\App\Http\Controllers\VentasController::class, 'index']);
-    Route::get('/ventas/export', [\App\Http\Controllers\VentasController::class, 'export']);
-    Route::post('/ventas', [\App\Http\Controllers\VentasController::class, 'store']);
-    Route::get('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'show']);
-    Route::put('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'update']);
-    Route::delete('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'destroy']);
-
-    // Sucursales públicas en entorno de desarrollo (lista global)
-    Route::get('/sucursales', [SucursalController::class, 'all']);
-
     // Rutas protegidas por sesión (puedes cambiar el middleware a sanctum/jwt luego)
     Route::middleware('auth:web')->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
@@ -109,7 +80,6 @@ Route::middleware('session')->group(function () {
         Route::post('/empresas/{empresa}/sucursales', [SucursalController::class, 'store']);
         Route::put('/sucursales/{sucursal}', [SucursalController::class, 'update']);
         Route::delete('/sucursales/{sucursal}', [SucursalController::class, 'destroy']);
-        Route::get('/sucursales', [SucursalController::class, 'all']);
 
         // Usuarios
         Route::get('/usuarios', [UserManagementController::class, 'index']);
@@ -133,6 +103,16 @@ Route::middleware('session')->group(function () {
         Route::put('/proveedores/{proveedor}', [\App\Http\Controllers\ProveedorController::class, 'update']);
         Route::delete('/proveedores/{proveedor}', [\App\Http\Controllers\ProveedorController::class, 'destroy']);
 
+        // Ventas
+        Route::get('/ventas', [\App\Http\Controllers\VentasController::class, 'index']);
+        Route::get('/ventas/{venta}', [\App\Http\Controllers\VentasController::class, 'show']);
+        Route::post('/ventas', [\App\Http\Controllers\VentasController::class, 'store']);
+        Route::put('/ventas/{venta}', [\App\Http\Controllers\VentasController::class, 'update']);
+        Route::delete('/ventas/{venta}', [\App\Http\Controllers\VentasController::class, 'destroy']);
+        Route::get('/ventas/export', [\App\Http\Controllers\VentasController::class, 'export']);
+        // Ruta de ayuda para debug de métodos de pago (solo local/debug)
+        Route::get('/ventas/metodos/debug', [\App\Http\Controllers\VentasController::class, 'debugMetodos']);
+
         // Efectivo
         Route::get('/efectivo/saldo', [EfectivoController::class, 'saldo']);
         Route::get('/efectivo/movimientos', [EfectivoController::class, 'movimientos']);
@@ -141,38 +121,11 @@ Route::middleware('session')->group(function () {
         Route::put('/efectivo/{id}', [EfectivoController::class, 'update']);
         Route::delete('/efectivo/{id}', [EfectivoController::class, 'destroy']);
 
-        // Banco - cuentas y movimientos bancarios
-        Route::get('/banco/cuentas', [BancoController::class, 'cuentas']);
-        Route::post('/banco/cuentas', [BancoController::class, 'storeCuenta']);
-        Route::get('/banco/saldo', [BancoController::class, 'saldo']);
-        Route::get('/banco/movimientos', [BancoController::class, 'movimientos']);
-        Route::get('/banco/movimientos/eliminados', [BancoController::class, 'eliminados']);
-        Route::post('/banco/movimientos', [BancoController::class, 'storeMovimiento']);
-        Route::put('/banco/movimientos/{id}', [BancoController::class, 'updateMovimiento']);
-        Route::delete('/banco/movimientos/{id}', [BancoController::class, 'destroyMovimiento']);
-
         // Respaldos
         Route::get('/respaldos', [RespaldosController::class, 'index']);
         Route::post('/respaldos', [RespaldosController::class, 'store']);
         Route::post('/respaldos/restaurar', [RespaldosController::class, 'restore']);
         Route::get('/respaldos/{respaldo}/descargar', [RespaldosController::class, 'download']);
         Route::delete('/respaldos/{respaldo}', [RespaldosController::class, 'destroy']);
-
-        // Cheques
-        Route::get('/cheques', [\App\Http\Controllers\ChequeController::class, 'index']);
-        Route::post('/cheques', [\App\Http\Controllers\ChequeController::class, 'store']);
-        Route::get('/cheques/{cheque}', [\App\Http\Controllers\ChequeController::class, 'show']);
-        Route::put('/cheques/{cheque}', [\App\Http\Controllers\ChequeController::class, 'update']);
-        Route::delete('/cheques/{cheque}', [\App\Http\Controllers\ChequeController::class, 'destroy']);
-        Route::post('/cheques/{cheque}/cobrar', [\App\Http\Controllers\ChequeController::class, 'cobrar']);
-        Route::post('/cheques/{id}/restore', [\App\Http\Controllers\ChequeController::class, 'restore']);
-
-        // Ventas (módulo básico - mock en sesión para integración rápida)
-        Route::get('/ventas', [\App\Http\Controllers\VentasController::class, 'index']);
-        Route::get('/ventas/export', [\App\Http\Controllers\VentasController::class, 'export']);
-        Route::post('/ventas', [\App\Http\Controllers\VentasController::class, 'store']);
-        Route::get('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'show']);
-        Route::put('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'update']);
-        Route::delete('/ventas/{id}', [\App\Http\Controllers\VentasController::class, 'destroy']);
     });
 });

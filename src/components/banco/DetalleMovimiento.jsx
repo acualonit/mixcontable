@@ -42,7 +42,10 @@ function DetalleMovimiento({ movimiento, onClose }) {
                       <th>Categoría:</th>
                       <td>{categoria}</td>
                     </tr>
-                    {/* Partida removida */}
+                    <tr>
+                      <th>Partida:</th>
+                      <td>{movimiento.partida ?? ''}</td>
+                    </tr>
                   </tbody>
                 </table>
               </div>

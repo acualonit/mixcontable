@@ -1,6 +1,5 @@
 import { API_BASE_URL } from './configApi';
 
-// If request helper not present, implement a lightweight wrapper here
 async function request(path, { method = 'GET', body, headers = {}, isFormData = false } = {}) {
   const defaultHeaders = { Accept: 'application/json' };
   const opts = {
@@ -26,16 +25,20 @@ async function request(path, { method = 'GET', body, headers = {}, isFormData = 
   return data;
 }
 
-export const fetchCheques = (filters = {}) => {
-  const params = new URLSearchParams();
-  Object.keys(filters).forEach(k => { if (filters[k]) params.append(k, filters[k]); });
-  const qs = params.toString() ? `?${params.toString()}` : '';
-  return request(`/cheques${qs}`);
+export const fetchCheques = (params = {}) => {
+  const q = new URLSearchParams(params).toString();
+  return request(`/cheques${q ? `?${q}` : ''}`);
 };
 
 export const createCheque = (payload) => request('/cheques', { method: 'POST', body: payload });
 export const updateCheque = (id, payload) => request(`/cheques/${id}`, { method: 'PUT', body: payload });
+export const anularCheque = (id, motivo = '') => request(`/cheques/${id}/anular`, { method: 'POST', body: { motivo } });
 export const deleteCheque = (id) => request(`/cheques/${id}`, { method: 'DELETE' });
-export const cobrarCheque = (id, payload = {}) => request(`/cheques/${id}/cobrar`, { method: 'POST', body: payload });
-export const fetchCheque = (id) => request(`/cheques/${id}`);
-export const restoreCheque = (id) => request(`/cheques/${id}/restore`, { method: 'POST' });
+
+export default {
+  fetchCheques,
+  createCheque,
+  updateCheque,
+  anularCheque,
+  deleteCheque,
+};

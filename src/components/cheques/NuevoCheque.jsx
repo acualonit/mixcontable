@@ -1,7 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { registrarMovimientoEfectivo } from '../../utils/efectivoUtils';
-import { createCheque, updateCheque } from '../../utils/chequesApi';
-import { fetchSucursales, fetchCuentas } from '../../utils/bancoApi';
 
 function NuevoCheque({ onClose, onSave, initialData = null }) {
   const [formData, setFormData] = useState({
@@ -14,46 +12,25 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
     origenDestino: '',
     sucursal: '',
     concepto: '',
-    estado: 'Pendiente',
     incluirFlujoCaja: true,
     observaciones: ''
   });
 
-  const [sucursales, setSucursales] = useState([]);
-  const [cuentas, setCuentas] = useState([]);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const [resSuc, resCtas] = await Promise.all([fetchSucursales(), fetchCuentas()]);
-        const list = resSuc?.data ?? resSuc ?? [];
-        const ctas = resCtas?.data ?? resCtas ?? [];
-        setSucursales(list);
-        setCuentas(ctas);
-      } catch (err) {
-        console.error('Error cargando sucursales', err);
-      }
-    };
-    load();
-  }, []);
-
-  // Si se proporciona initialData (editar), cargarlo en el formulario
   useEffect(() => {
     if (!initialData) return;
-    setFormData((prev) => ({
-      ...prev,
-      cuenta_id: initialData.cuenta_id ?? prev.cuenta_id,
-      banco: initialData.cuenta_banco ?? initialData.banco ?? prev.banco,
-      numeroCheque: initialData.numero_cheque ?? prev.numeroCheque,
-      fechaEmision: initialData.fecha_emision ?? prev.fechaEmision,
-      fechaCobro: initialData.fecha_cobro ?? prev.fechaCobro,
-      monto: initialData.monto ?? prev.monto,
-      origenDestino: initialData.beneficiario ?? prev.origenDestino,
-      concepto: initialData.concepto ?? prev.concepto,
-      observaciones: initialData.observaciones ?? prev.observaciones,
-      sucursal: initialData.id_sucursal ?? prev.sucursal,
-      tipo: prev.tipo,
-      estado: initialData.estado ?? prev.estado
+    setFormData((f) => ({
+      ...f,
+      tipo: initialData.tipo || f.tipo,
+      banco: initialData.banco || initialData.banco_nombre || f.banco,
+      numeroCheque: initialData.numeroCheque || initialData.numero_cheque || f.numeroCheque,
+      fechaEmision: initialData.fechaEmision || initialData.fecha_emision || f.fechaEmision,
+      fechaCobro: initialData.fechaCobro || initialData.fecha_cobro || f.fechaCobro,
+      monto: (initialData.monto !== undefined && initialData.monto !== null) ? initialData.monto : f.monto,
+      origenDestino: initialData.origenDestino || initialData.beneficiario || f.origenDestino,
+      sucursal: initialData.sucursal || f.sucursal,
+      concepto: initialData.concepto || f.concepto,
+      observaciones: initialData.observaciones || f.observaciones,
+      id: initialData.id || null,
     }));
   }, [initialData]);
 
@@ -78,37 +55,26 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
       }
     }
 
-    try {
-      const payload = {
-        cuenta_id: formData.cuenta_id ?? null,
-        numero_cheque: formData.numeroCheque,
-        fecha_emision: formData.fechaEmision,
-        fecha_cobro: formData.fechaCobro || null,
-        beneficiario: formData.origenDestino,
-        concepto: formData.concepto,
-        monto: parseFloat(formData.monto) || 0,
-        estado: formData.estado || 'Pendiente',
-        observaciones: formData.observaciones || null
-      };
-
-      let res;
-      if (initialData && initialData.id) {
-        res = await updateCheque(initialData.id, payload);
-      } else {
-        res = await createCheque(payload);
-      }
-
-      if (onSave) onSave(res.data);
-      onClose();
-    } catch (err) {
-      console.error(err);
-      alert(err.message || 'Error guardando cheque');
-    }
+    onSave(formData);
+    onClose();
   };
 
   return (
-    <div className="modal d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
-      <div className="modal-dialog">
+    <div
+      className=""
+      style={{
+        position: 'fixed',
+        inset: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        zIndex: 1050,
+        padding: '1rem',
+        overflowY: 'auto',
+      }}
+    >
+      <div className="modal-dialog" style={{ maxWidth: 760, width: '100%' }}>
         <div className="modal-content">
           <div className="modal-header bg-primary text-white">
             <h5 className="modal-title">Nuevo Cheque</h5>
@@ -130,33 +96,21 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                   </select>
                 </div>
                 <div className="col-md-6">
-                  <label className="form-label">Banco / Cuenta</label>
+                  <label className="form-label">Banco</label>
                   <select
                     className="form-select"
-                    value={formData.cuenta_id ?? ''}
-                    onChange={(e) => {
-                      const cuentaId = e.target.value ? parseInt(e.target.value, 10) : null;
-                      setFormData((prev) => {
-                        const selected = cuentas.find((c) => c.id === cuentaId);
-                        return {
-                          ...prev,
-                          cuenta_id: cuentaId,
-                          banco: selected ? selected.banco : prev.banco,
-                          sucursal: selected && selected.id_sucursal ? selected.id_sucursal : prev.sucursal
-                        };
-                      });
-                    }}
+                    value={formData.banco}
+                    onChange={(e) => setFormData({...formData, banco: e.target.value})}
                     required
                   >
-                    <option value="">Seleccionar cuenta</option>
-                    {cuentas.map((ct) => (
-                      <option key={ct.id} value={ct.id}>{`${ct.banco} - ${ct.numero_cuenta}`}</option>
-                    ))}
+                    <option value="">Seleccionar banco</option>
+                    <option value="banco_estado">Banco Estado</option>
+                    <option value="banco_chile">Banco de Chile</option>
+                    <option value="banco_santander">Banco Santander</option>
+                    <option value="banco_bci">Banco BCI</option>
                   </select>
                 </div>
               </div>
-
-              
 
               <div className="row mb-3">
                 <div className="col-md-6">
@@ -171,18 +125,17 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                 </div>
                 <div className="col-md-6">
                   <label className="form-label">Sucursal</label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    value={
-                      (() => {
-                        const id = Number(formData.sucursal || formData.sucursal === 0 ? formData.sucursal : NaN);
-                        const s = sucursales.find((x) => x.id === id);
-                        return s ? s.nombre : '';
-                      })()
-                    }
-                    readOnly
-                  />
+                  <select
+                    className="form-select"
+                    value={formData.sucursal}
+                    onChange={(e) => setFormData({...formData, sucursal: e.target.value})}
+                    required
+                  >
+                    <option value="">Seleccionar sucursal</option>
+                    <option value="central">Sucursal Central</option>
+                    <option value="norte">Sucursal Norte</option>
+                    <option value="sur">Sucursal Sur</option>
+                  </select>
                 </div>
               </div>
 
@@ -209,37 +162,21 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                 </div>
               </div>
 
-              <div className="row mb-3">
-                <div className="col-md-6">
-                  <label className="form-label">Monto</label>
-                  <input
-                    type="number"
-                    className="form-control"
-                    value={formData.monto}
-                    onChange={(e) => setFormData({...formData, monto: e.target.value})}
-                    required
-                  />
-                </div>
-                <div className="col-md-6">
-                  <label className="form-label">Estado</label>
-                  <select
-                    className="form-select"
-                    value={formData.estado}
-                    onChange={(e) => setFormData({...formData, estado: e.target.value})}
-                    required
-                  >
-                    <option value="Pendiente">Pendiente</option>
-                    <option value="Cobrado">Cobrado</option>
-                    <option value="Rechazado">Rechazado</option>
-                    <option value="Prestado">Prestado</option>
-                  </select>
-                </div>
+              <div className="mb-3">
+                <label className="form-label">Monto</label>
+                <input
+                  type="number"
+                  className="form-control"
+                  value={formData.monto}
+                  onChange={(e) => setFormData({...formData, monto: e.target.value})}
+                  required
+                />
               </div>
 
-              
-
               <div className="mb-3">
-                <label className="form-label">Destinatario</label>
+                <label className="form-label">
+                  {formData.tipo === 'emitido' ? 'Destinatario' : 'Origen'}
+                </label>
                 <input
                   type="text"
                   className="form-control"

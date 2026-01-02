@@ -1,8 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import NuevoCheque from '../components/cheques/NuevoCheque';
 import DetalleCheque from '../components/cheques/DetalleCheque';
+import * as chequesApi from '../utils/chequesApi';
 import { registrarMovimientoBancario } from '../utils/bancoUtils';
-import { fetchCheques, cobrarCheque, deleteCheque, fetchCheque } from '../utils/chequesApi';
+
+function mapServerToUI(c) {
+  return {
+    id: c.id,
+    numero: c.numero_cheque || c.numeroCheque || c.numero || '',
+    tipo: c.tipo || (c.estado === 'EMITIDO' ? 'emitido' : 'recibido'),
+    banco: c.banco || c.banco_nombre || '',
+    fechaEmision: c.fecha_emision || c.fechaEmision || '',
+    fechaCobro: c.fecha_cobro || c.fechaCobro || '',
+    monto: c.monto != null ? Number(c.monto) : (c.monto ? Number(c.monto) : 0),
+    estado: (c.estado || '').toString().toLowerCase(),
+    destinatario: c.beneficiario || c.origenDestino || '',
+    observaciones: c.observaciones || c.observacion || '',
+    raw: c,
+  };
+}
 
 function Cheques() {
   const [tipoFiltro, setTipoFiltro] = useState('');
@@ -13,48 +29,35 @@ function Cheques() {
   const [showDetalle, setShowDetalle] = useState(false);
   const [chequeSeleccionado, setChequeSeleccionado] = useState(null);
   const [cheques, setCheques] = useState([]);
-  const [editingCheque, setEditingCheque] = useState(null);
-  const [cuentas, setCuentas] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [editing, setEditing] = useState(null);
 
-  useEffect(() => {
-    loadCheques();
-    // Cargar cuentas para poblar filtro de banco
-    (async () => {
-      try {
-        const { data } = await import('../utils/bancoApi').then(m => m.fetchCuentas());
-        setCuentas(data || []);
-      } catch (err) {
-        console.error('Error cargando cuentas', err);
-      }
-    })();
-  }, []);
-
-  // Recargar la lista cuando cambien los filtros
-  useEffect(() => {
-    loadCheques();
-  }, [tipoFiltro, estadoFiltro, bancoFiltro, fechaFiltro]);
-
-  const loadCheques = async () => {
+  const fetchList = async () => {
+    setLoading(true);
     try {
-      const filters = {};
-      if (tipoFiltro) {
-        filters.tipo = tipoFiltro === 'emitidos' ? 'emitido' : (tipoFiltro === 'recibidos' ? 'recibido' : tipoFiltro);
-      }
-      if (estadoFiltro) filters.estado = estadoFiltro;
-      if (bancoFiltro) filters.banco = bancoFiltro;
-      if (fechaFiltro) filters.fecha_cobro = fechaFiltro;
-
-      const res = await fetchCheques(filters);
-      setCheques(res.data || []);
-    } catch (err) {
-      console.error(err);
-      alert(err.message || 'Error cargando cheques');
+      const params = {};
+      if (tipoFiltro) params.tipo = tipoFiltro;
+      if (estadoFiltro) params.estado = estadoFiltro;
+      if (bancoFiltro) params.banco = bancoFiltro;
+      if (fechaFiltro) params.fecha = fechaFiltro;
+      const data = await chequesApi.fetchCheques(params);
+      const list = Array.isArray(data) ? data.map(mapServerToUI) : [];
+      setCheques(list);
+    } catch (error) {
+      console.error('Error cargando cheques', error);
+      alert(error.message || 'Error al cargar cheques');
+    } finally {
+      setLoading(false);
     }
   };
 
+  useEffect(() => {
+    fetchList();
+  }, []);
+
   const handleCobrarCheque = async (cheque) => {
     try {
-      // Registrar el movimiento bancario según el tipo de cheque
+      // Registrar movimiento bancario (si aplica)
       await registrarMovimientoBancario({
         fecha: new Date().toISOString().split('T')[0],
         tipo: cheque.tipo === 'emitido' ? 'egreso' : 'ingreso',
@@ -63,60 +66,84 @@ function Cheques() {
         banco: cheque.banco,
         referencia: cheque.numero,
         categoria: 'Cheque',
-        sucursal: cheque.sucursal
+        sucursal: cheque.sucursal || cheque.raw?.sucursal || ''
       });
 
-      // Llamar al endpoint para marcar como cobrado
-      await cobrarCheque(cheque.id, { fecha_cobro: new Date().toISOString().split('T')[0] });
-      await loadCheques();
-      console.log('Cheque marcado como cobrado:', cheque);
+      // Marcar como cobrado en servidor (si existe endpoint)
+      if (cheque.id) {
+        await chequesApi.updateCheque(cheque.id, { estado: 'COBRADO' });
+      }
+      await fetchList();
     } catch (error) {
-      alert(error.message);
+      alert(error.message || 'Error al cobrar cheque');
     }
   };
 
-  const handleRestoreCheque = async (cheque) => {
-    if (!window.confirm('¿Restaurar este cheque (quitar anulacion)?')) return;
+  const handleVerDetalle = (cheque) => {
+    setChequeSeleccionado(cheque);
+    setShowDetalle(true);
+  };
+
+  const handleOpenNuevo = (initial = null) => {
+    setEditing(initial);
+    setShowNuevoCheque(true);
+  };
+
+  const handleSave = async (formData) => {
     try {
-      // Llamar endpoint de restauración
-      await import('../utils/chequesApi').then(m => m.restoreCheque(cheque.id));
-      await loadCheques();
-    } catch (err) {
-      console.error(err);
-      alert(err.message || 'Error restaurando cheque');
+      // Mapear campos del formulario al payload esperado por el servidor
+      const payload = {
+        numero_cheque: formData.numeroCheque,
+        fecha_emision: formData.fechaEmision,
+        fecha_cobro: formData.fechaCobro,
+        beneficiario: formData.origenDestino,
+        concepto: formData.concepto,
+        monto: Number(formData.monto) || 0,
+        banco: formData.banco,
+        observaciones: formData.observaciones || '',
+        estado: formData.tipo === 'emitido' ? 'EMITIDO' : 'RECIBIDO',
+      };
+
+      if (formData.id) {
+        await chequesApi.updateCheque(formData.id, payload);
+      } else {
+        await chequesApi.createCheque(payload);
+      }
+      setShowNuevoCheque(false);
+      setEditing(null);
+      await fetchList();
+    } catch (error) {
+      console.error('Error guardando cheque', error);
+      alert(error.message || 'Error al guardar cheque');
     }
   };
 
-  const handleVerDetalle = async (cheque) => {
+  const handleAnular = async (cheque) => {
+    if (!cheque?.id) return;
+    if (!confirm('¿Anular este cheque?')) return;
     try {
-      const res = await fetchCheque(cheque.id);
-      setChequeSeleccionado(res.data || cheque);
-      setShowDetalle(true);
-    } catch (err) {
-      console.error(err);
-      alert(err.message || 'Error cargando detalle');
+      // intentar endpoint específico, si no existe el servidor deberá ignorarlo
+      await chequesApi.anularCheque(cheque.id);
+      await fetchList();
+    } catch (error) {
+      // Intentar actualizar estado directamente
+      try {
+        await chequesApi.updateCheque(cheque.id, { estado: 'ANULADO' });
+        await fetchList();
+      } catch (e) {
+        alert(e.message || 'Error al anular cheque');
+      }
     }
   };
 
-  const handleEditar = async (cheque) => {
-    if (cheque.estado === 'ANULADO' || cheque.estado === 'ANULADA' || cheque.estado === 'ELIMINADA') return;
+  const handleDelete = async (cheque) => {
+    if (!cheque?.id) return;
+    if (!confirm('¿Eliminar este cheque definitivamente?')) return;
     try {
-      const res = await fetchCheque(cheque.id);
-      setEditingCheque(res.data || cheque);
-      setShowNuevoCheque(true);
-    } catch (err) {
-      console.error(err);
-      alert(err.message || 'Error cargando cheque para editar');
-    }
-  };
-
-  const handleEliminar = async (cheque) => {
-    if (!window.confirm('¿Anular/eliminar cheque?')) return;
-    try {
-      await deleteCheque(cheque.id);
-      await loadCheques();
-    } catch (err) {
-      alert(err.message || 'Error eliminando cheque');
+      await chequesApi.deleteCheque(cheque.id);
+      await fetchList();
+    } catch (error) {
+      alert(error.message || 'Error al eliminar cheque');
     }
   };
 
@@ -126,7 +153,7 @@ function Cheques() {
         <h2>Cheques</h2>
         <button 
           className="btn btn-primary"
-          onClick={() => setShowNuevoCheque(true)}
+          onClick={() => handleOpenNuevo(null)}
         >
           <i className="bi bi-plus-circle me-2"></i>
           Nuevo Cheque
@@ -139,7 +166,7 @@ function Cheques() {
         </div>
         <div className="card-body">
           <div className="row">
-            <div className="col-md-2 mb-3">
+            <div className="col-md-3 mb-3">
               <label className="form-label">Tipo</label>
               <select 
                 className="form-select"
@@ -147,11 +174,11 @@ function Cheques() {
                 onChange={(e) => setTipoFiltro(e.target.value)}
               >
                 <option value="">Todos los tipos</option>
-                <option value="emitidos">Emitidos</option>
-                <option value="recibidos">Recibidos</option>
+                <option value="emitido">Emitidos</option>
+                <option value="recibido">Recibidos</option>
               </select>
             </div>
-            <div className="col-md-2 mb-3">
+            <div className="col-md-3 mb-3">
               <label className="form-label">Estado</label>
               <select 
                 className="form-select"
@@ -159,28 +186,21 @@ function Cheques() {
                 onChange={(e) => setEstadoFiltro(e.target.value)}
               >
                 <option value="">Todos los estados</option>
-                <option value="Pendiente">Pendiente</option>
-                <option value="Cobrado">Cobrado</option>
-                <option value="Rechazado">Rechazado</option>
-                <option value="Prestado">Prestado</option>
+                <option value="pendiente">Pendiente</option>
+                <option value="cobrado">Cobrado</option>
+                <option value="anulado">Anulado</option>
               </select>
             </div>
-            <div className="col-md-4 mb-3">
+            <div className="col-md-3 mb-3">
               <label className="form-label">Banco</label>
-              <select 
-                className="form-select"
+              <input
+                className="form-control"
                 value={bancoFiltro}
                 onChange={(e) => setBancoFiltro(e.target.value)}
-              >
-                <option value="">Todos los bancos</option>
-                {cuentas.map((ct) => (
-                  <option key={ct.id} value={`${ct.banco} - ${ct.numero_cuenta}`}>
-                    {`${ct.banco} - ${ct.numero_cuenta}`}
-                  </option>
-                ))}
-              </select>
+                placeholder="Filtrar por banco"
+              />
             </div>
-            <div className="col-md-2 mb-3">
+            <div className="col-md-3 mb-3">
               <label className="form-label">Fecha de Cobro</label>
               <input
                 type="date"
@@ -189,11 +209,10 @@ function Cheques() {
                 onChange={(e) => setFechaFiltro(e.target.value)}
               />
             </div>
-            <div className="col-md-2 d-flex align-items-end mb-3">
-              <button className="btn btn-outline-secondary w-100" onClick={() => { setTipoFiltro(''); setEstadoFiltro(''); setBancoFiltro(''); setFechaFiltro(''); }}>
-                Limpiar filtros
-              </button>
-            </div>
+          </div>
+          <div className="d-flex gap-2">
+            <button className="btn btn-sm btn-outline-secondary" onClick={fetchList}>Aplicar</button>
+            <button className="btn btn-sm btn-outline-secondary" onClick={() => { setTipoFiltro(''); setEstadoFiltro(''); setBancoFiltro(''); setFechaFiltro(''); fetchList(); }}>Limpiar</button>
           </div>
         </div>
       </div>
@@ -219,60 +238,47 @@ function Cheques() {
                 </tr>
               </thead>
               <tbody>
-                {cheques.map((c) => {
-                  const estadoNorm = String(c.estado || '').toLowerCase();
-                  // Considerar también registros soft-deleted (deleted_at) como anulados
-                  const isSoftDeleted = !!c.deleted_at;
-                  const isAnulado = isSoftDeleted || ['anulado', 'anulada', 'eliminada'].includes(estadoNorm);
-                  const isRechazado = estadoNorm === 'rechazado';
-                  const isCobrado = estadoNorm === 'cobrado';
-                  const isPrestado = estadoNorm === 'prestado';
-                  const rowClass = isAnulado ? 'table-danger' : (isRechazado ? 'table-warning' : (isPrestado ? 'table-info' : ''));
-
-                  return (
-                    <tr key={c.id} className={rowClass}>
-                      <td>{c.numero_cheque}</td>
-                      <td>{c.tipo ?? (c.estado || '')}</td>
-                      <td>{c.cuenta_banco ? `${c.cuenta_banco} - ${c.cuenta_numero ?? ''}` : ''}</td>
-                      <td>{c.fecha_emision}</td>
-                      <td>{c.fecha_cobro}</td>
-                      <td>{c.monto?.toLocaleString ? `$${c.monto.toLocaleString()}` : c.monto}</td>
-                      <td>
-                        {isRechazado ? (
-                          <span className="badge bg-secondary">{c.estado}</span>
-                        ) : isCobrado ? (
-                          <span className="badge bg-success">{c.estado}</span>
-                        ) : isAnulado ? (
-                          <span className="badge bg-danger">{c.estado}</span>
-                        ) : isPrestado ? (
-                          <span className="badge bg-info text-dark">{c.estado}</span>
-                        ) : (
-                          <span className="badge bg-warning text-dark">{c.estado}</span>
-                        )}
-                      </td>
-                      <td>{c.beneficiario}</td>
-                          <td>
-                            <div className="btn-group">
-                              <button className="btn btn-sm btn-primary" onClick={() => handleVerDetalle(c)}>
-                                <i className="bi bi-eye"></i>
-                              </button>
-                              <button className="btn btn-sm btn-warning" onClick={() => handleEditar(c)} disabled={isAnulado || isRechazado}>
-                                <i className="bi bi-pencil"></i>
-                              </button>
-                              {/* Mostrar botón de restaurar (chulo) solo para registros soft-deleted/anulados */}
-                              {isAnulado && c.deleted_at ? (
-                                <button className="btn btn-sm btn-success" onClick={() => handleRestoreCheque(c)} title="Restaurar">
-                                  <i className="bi bi-check-circle"></i>
-                                </button>
-                              ) : null}
-                              <button className="btn btn-sm btn-danger" onClick={() => handleEliminar(c)} disabled={isAnulado}>
-                                <i className="bi bi-x-circle"></i>
-                              </button>
-                            </div>
-                          </td>
-                    </tr>
-                  );
-                })}
+                {loading && (
+                  <tr><td colSpan="9">Cargando...</td></tr>
+                )}
+                {!loading && cheques.length === 0 && (
+                  <tr><td colSpan="9">No hay cheques</td></tr>
+                )}
+                {!loading && cheques.map((c) => (
+                  <tr key={c.id || c.numero}>
+                    <td>{c.numero}</td>
+                    <td>{c.tipo}</td>
+                    <td>{c.banco}</td>
+                    <td>{c.fechaEmision}</td>
+                    <td>{c.fechaCobro}</td>
+                    <td>{c.monto ? `$${c.monto.toLocaleString()}` : ''}</td>
+                    <td>
+                      <span className={`badge bg-${c.estado === 'pendiente' ? 'warning' : c.estado === 'cobrado' ? 'success' : c.estado === 'anulado' ? 'danger' : 'secondary'}`}>
+                        {c.estado}
+                      </span>
+                    </td>
+                    <td>{c.destinatario}</td>
+                    <td>
+                      <div className="btn-group">
+                        <button className="btn btn-sm btn-primary" onClick={() => handleVerDetalle(c)}>
+                          <i className="bi bi-eye"></i>
+                        </button>
+                        <button className="btn btn-sm btn-warning" onClick={() => handleOpenNuevo(c.raw)}>
+                          <i className="bi bi-pencil"></i>
+                        </button>
+                        <button className="btn btn-sm btn-success" onClick={() => handleCobrarCheque(c)}>
+                          <i className="bi bi-check-circle"></i>
+                        </button>
+                        <button className="btn btn-sm btn-danger" onClick={() => handleAnular(c)} title="Anular">
+                          <i className="bi bi-x-circle"></i>
+                        </button>
+                        <button className="btn btn-sm btn-outline-danger" onClick={() => handleDelete(c)} title="Eliminar">
+                          <i className="bi bi-trash"></i>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -281,13 +287,9 @@ function Cheques() {
 
       {showNuevoCheque && (
         <NuevoCheque 
-          initialData={editingCheque}
-          onClose={() => { setShowNuevoCheque(false); setEditingCheque(null); }}
-          onSave={async (data) => {
-            await loadCheques();
-            setShowNuevoCheque(false);
-            setEditingCheque(null);
-          }}
+          initialData={editing}
+          onClose={() => { setShowNuevoCheque(false); setEditing(null); }}
+          onSave={handleSave}
         />
       )}
 

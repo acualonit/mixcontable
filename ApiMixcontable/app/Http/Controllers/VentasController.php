@@ -16,7 +16,62 @@ class VentasController extends Controller
     public function index(Request $request)
     {
         $perPage = $request->get('per_page', 50);
-        $ventas = Venta::with(['detalles', 'cliente'])->orderBy('fecha', 'desc')->paginate($perPage);
+
+        $query = Venta::with(['detalles', 'cliente'])->orderBy('fecha', 'desc');
+
+        // Filtros: fecha (YYYY-MM-DD), sucursal (id o nombre), metodoPago (literal)
+        if ($request->filled('fecha')) {
+            $date = $request->get('fecha');
+            $query->whereDate('fecha', $date);
+        }
+
+        if ($request->filled('sucursal')) {
+            $s = $request->get('sucursal');
+            if (is_numeric($s)) {
+                $query->where('sucursal_id', $s);
+            } else {
+                $query->where(function($q) use ($s) {
+                    $q->where('sucursal_nombre', $s)
+                      ->orWhere('sucursal', $s);
+                });
+            }
+        }
+
+        if ($request->filled('metodoPago')) {
+            $mp = $request->get('metodoPago');
+            $query->where(function($q) use ($mp) {
+                $q->where('metodos_pago', $mp);
+
+                // Añadir búsqueda en tabla `venta_metodos_pago` sólo si existe
+                try {
+                    if (Schema::hasTable('venta_metodos_pago')) {
+                        $q->orWhereRaw(
+                            "EXISTS(SELECT 1 FROM venta_metodos_pago vmp WHERE vmp.venta_id = ventas.id AND vmp.metodos LIKE ?)",
+                            ["%\"tipo\":\"{$mp}\"%"]
+                        );
+                    } else {
+                        // tabla no existe -> evitar SQL que cause error
+                        Log::warning('Tabla venta_metodos_pago no encontrada; omitido subquery de metodos de pago');
+                    }
+                } catch (\Exception $e) {
+                    // En caso de algún error inesperado con Schema, no romper la consulta
+                    Log::warning('Error comprobando tabla venta_metodos_pago: ' . $e->getMessage());
+                }
+            });
+        }
+
+        $ventas = $query->with('sucursal')->paginate($perPage);
+
+        // Asegurar que `sucursal_nombre` esté poblado (fallback a relación `sucursal.nombre` si existe)
+        $ventas->getCollection()->transform(function ($v) {
+            if (empty($v->sucursal_nombre)) {
+                if ($v->relationLoaded('sucursal') && $v->sucursal) {
+                    $v->sucursal_nombre = $v->sucursal->nombre;
+                }
+            }
+            return $v;
+        });
+
         return response()->json($ventas);
     }
 
@@ -82,16 +137,79 @@ class VentasController extends Controller
                 'estado' => $data['estado'] ?? 'REGISTRADA',
             ];
 
-            // Persistir el método de pago recibido (literal) en la columna `ventas.metodos_pago`.
-            if (!empty($metodoPago)) {
-                Log::info('VentasController@store: metodo_pago recibido', [
-                    'metodo_pago' => $metodoPago,
-                    'columnType' => $columnType,
-                ]);
-            }
-
             // Guardamos el literal en la columna `metodos_pago`.
-            $ventaPayload['metodos_pago'] = $metodoPago;
+            // Normalizar metodos_pago según el tipo de columna en la BD.
+            if ($columnType === 'enum') {
+                // intentar obtener literales permitidos desde la definición de la columna
+                $allowed = null;
+                try {
+                    $rows = DB::select("SHOW COLUMNS FROM ventas WHERE Field = 'metodos_pago'");
+                    if (!empty($rows) && isset($rows[0]->Type)) {
+                        $typeDef = $rows[0]->Type; // ejemplo: enum('Efectivo','Transferencia',...)
+                        preg_match_all("/'([^']+)'/", $typeDef, $m);
+                        $allowed = $m[1] ?? null;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('No se pudo leer definición de columna metodos_pago: ' . $e->getMessage());
+                }
+
+                // obtener un valor candidato desde el payload (manejar array/obj/object/string)
+                $candidate = null;
+                if (is_array($metodoPago)) {
+                    $first = $metodoPago[0] ?? null;
+                    if (is_array($first) || is_object($first)) {
+                        $candidate = $first['tipo'] ?? ($first->tipo ?? null);
+                    } else {
+                        $candidate = is_string($first) ? $first : null;
+                    }
+                } elseif (is_object($metodoPago)) {
+                    $candidate = $metodoPago->tipo ?? null;
+                } else {
+                    $candidate = is_string($metodoPago) ? $metodoPago : null;
+                }
+
+                // si tenemos lista de permitidos, buscar coincidencia case-insensitive
+                $final = null;
+                if (is_array($allowed) && $candidate) {
+                    foreach ($allowed as $a) {
+                        if (mb_strtolower($a) === mb_strtolower($candidate)) { $final = $a; break; }
+                        // permitir coincidencias parciales (ej. 'efectivo' vs 'Efectivo')
+                        if (mb_stripos($a, (string)$candidate) !== false) { $final = $a; break; }
+                    }
+                }
+
+                // si no encontramos, intentar mapear por términos comunes
+                if (!$final && $candidate) {
+                    $map = [
+                        'efectivo' => ['efectivo','efec','cash'],
+                        'transferencia' => ['transferencia','transfer','tran'],
+                        'cheque' => ['cheque','check'],
+                        'tarjeta credito' => ['credito','tarjeta credito','tarjeta_credito','card_credit'],
+                        'tarjeta debito' => ['debito','tarjeta debito','tarjeta_debito','card_debit'],
+                        'pago online' => ['online','pago online','webpay','online_payment'],
+                        'credito (deuda)' => ['credito_deuda','credito','deuda']
+                    ];
+                    $c = mb_strtolower((string)$candidate);
+                    foreach ($map as $literal => $aliases) {
+                        foreach ($aliases as $alias) {
+                            if (mb_stripos($c, $alias) !== false) {
+                                // buscar literal real en allowed que contenga $literal
+                                if (is_array($allowed)) {
+                                    foreach ($allowed as $a) {
+                                        if (mb_stripos(mb_strtolower($a), mb_strtolower($literal)) !== false) { $final = $a; break 2; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // si al final no coincide con enum permitido, dejamos null para evitar error SQL
+                $ventaPayload['metodos_pago'] = $final ?? null;
+            } else {
+                // columna json u otro tipo: guardar tal cual (permitir arrays/objetos)
+                $ventaPayload['metodos_pago'] = $metodoPago;
+            }
 
             $venta = Venta::create($ventaPayload);
             
@@ -202,7 +320,77 @@ class VentasController extends Controller
                 ]);
             }
 
-            $updatePayload['metodos_pago'] = $metodoPago;
+            // Normalizar metodos_pago para evitar pasar arrays a columnas ENUM
+            if ($columnType === 'enum') {
+                // intentar obtener literales permitidos desde la definición de la columna
+                $allowed = null;
+                try {
+                    $rows = DB::select("SHOW COLUMNS FROM ventas WHERE Field = 'metodos_pago'");
+                    if (!empty($rows) && isset($rows[0]->Type)) {
+                        $typeDef = $rows[0]->Type; // ejemplo: enum('Efectivo','Transferencia',...)
+                        preg_match_all("/'([^']+)'/", $typeDef, $m);
+                        $allowed = $m[1] ?? null;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('No se pudo leer definición de columna metodos_pago: ' . $e->getMessage());
+                }
+
+                // obtener un valor candidato desde el payload (manejar array/obj/object/string)
+                $candidate = null;
+                if (is_array($metodoPago)) {
+                    $first = $metodoPago[0] ?? null;
+                    if (is_array($first) || is_object($first)) {
+                        $candidate = $first['tipo'] ?? ($first->tipo ?? null);
+                    } else {
+                        $candidate = is_string($first) ? $first : null;
+                    }
+                } elseif (is_object($metodoPago)) {
+                    $candidate = $metodoPago->tipo ?? null;
+                } else {
+                    $candidate = is_string($metodoPago) ? $metodoPago : null;
+                }
+
+                // si tenemos lista de permitidos, buscar coincidencia case-insensitive
+                $final = null;
+                if (is_array($allowed) && $candidate) {
+                    foreach ($allowed as $a) {
+                        if (mb_strtolower($a) === mb_strtolower($candidate)) { $final = $a; break; }
+                        // permitir coincidencias parciales (ej. 'efectivo' vs 'Efectivo')
+                        if (mb_stripos($a, (string)$candidate) !== false) { $final = $a; break; }
+                    }
+                }
+
+                // si no encontramos, intentar mapear por términos comunes
+                if (!$final && $candidate) {
+                    $map = [
+                        'efectivo' => ['efectivo','efec','cash'],
+                        'transferencia' => ['transferencia','transfer','tran'],
+                        'cheque' => ['cheque','check'],
+                        'tarjeta credito' => ['credito','tarjeta credito','tarjeta_credito','card_credit'],
+                        'tarjeta debito' => ['debito','tarjeta debito','tarjeta_debito','card_debit'],
+                        'pago online' => ['online','pago online','webpay','online_payment'],
+                        'credito (deuda)' => ['credito_deuda','credito','deuda']
+                    ];
+                    $c = mb_strtolower((string)$candidate);
+                    foreach ($map as $literal => $aliases) {
+                        foreach ($aliases as $alias) {
+                            if (mb_stripos($c, $alias) !== false) {
+                                // buscar literal real en allowed que contenga $literal
+                                if (is_array($allowed)) {
+                                    foreach ($allowed as $a) {
+                                        if (mb_stripos(mb_strtolower($a), mb_strtolower($literal)) !== false) { $final = $a; break 2; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // si al final no coincide con enum permitido, dejamos null para evitar error SQL
+                $updatePayload['metodos_pago'] = $final ?? null;
+            } else {
+                $updatePayload['metodos_pago'] = $metodoPago;
+            }
 
             $venta->update($updatePayload);
 
@@ -329,267 +517,3 @@ class VentasController extends Controller
         }
     }
 }
-// <?php
-
-// namespace App\Http\Controllers;
-
-// use Illuminate\Http\Request;
-// use Illuminate\Support\Facades\Session;
-// use Illuminate\Support\Facades\Storage;
-// use Illuminate\Support\Facades\DB;
-// use Illuminate\Support\Facades\Log;
-// use App\Models\Venta;
-// use App\Models\VentaDetalle;
-// use Illuminate\Support\Facades\Validator;
-// use Symfony\Component\HttpFoundation\StreamedResponse;
-
-// class VentasController extends Controller
-// {
-//     // Lista ventas desde sesión (mock) con filtros simples
-//     public function index(Request $request)
-//     {
-//         // Leer ventas desde archivo persistente si existe (más fiable en entorno dev)
-//         $path = storage_path('app/mock_ventas.json');
-//         if (file_exists($path)) {
-//             $content = file_get_contents($path);
-//             $ventas = json_decode($content, true) ?: [];
-//         } else {
-//             $ventas = Session::get('mock_ventas', []);
-//         }
-
-//         // Aplicar filtros básicos
-//         if ($request->filled('fecha')) {
-//             $ventas = array_filter($ventas, function ($v) use ($request) {
-//                 return isset($v['fecha']) && $v['fecha'] === $request->get('fecha');
-//             });
-//         }
-
-//         if ($request->filled('sucursal')) {
-//             $ventas = array_filter($ventas, function ($v) use ($request) {
-//                 return isset($v['sucursal']) && $v['sucursal'] === $request->get('sucursal');
-//             });
-//         }
-
-//         if ($request->filled('metodoPago')) {
-//             $mp = $request->get('metodoPago');
-//             $ventas = array_filter($ventas, function ($v) use ($mp) {
-//                 if (!isset($v['metodos_pago'])) return false;
-//                 return stripos(json_encode($v['metodos_pago']), $mp) !== false;
-//             });
-//         }
-
-//         // Reindex
-//         $ventas = array_values($ventas);
-
-//         return response()->json(['data' => $ventas]);
-//     }
-
-//     public function show($id)
-//     {
-//         $ventas = Session::get('mock_ventas', []);
-//         foreach ($ventas as $v) {
-//             if ($v['id'] == $id) {
-//                 return response()->json(['data' => $v]);
-//             }
-//         }
-//         return response()->json(['message' => 'Venta no encontrada'], 404);
-//     }
-
-//     public function store(Request $request)
-//     {
-//         $data = $request->all();
-
-//         // Log payload to help debug why ventas are not being guardadas
-//         Log::info('Venta store payload', $data);
-
-//         $validator = Validator::make($data, [
-//             'fecha' => 'required|date',
-//             'sucursal' => 'required|string',
-//             'items' => 'required|array|min:1',
-//         ]);
-
-//         if ($validator->fails()) {
-//             return response()->json(['message' => 'Datos inválidos', 'errors' => $validator->errors()], 422);
-//         }
-
-//         $ventas = Session::get('mock_ventas', []);
-
-//         $id = time() . rand(100, 999);
-
-//         $subtotal = 0;
-//         foreach ($data['items'] as $it) {
-//             $cantidad = isset($it['cantidad']) ? (float)$it['cantidad'] : 1;
-//             $precio = isset($it['precioUnitario']) ? (float)$it['precioUnitario'] : 0;
-//             $subtotal += $cantidad * $precio;
-//         }
-
-//         $iva = isset($data['iva']) ? (float)$data['iva'] : round($subtotal * 0.19, 2);
-//         $total = isset($data['total']) ? (float)$data['total'] : round($subtotal + $iva, 2);
-
-//         // Intentar persistir en BD (transacción). Si falla, usar el fallback a archivo/sesión.
-//         $ventaSaved = null;
-//         $dbError = null;
-//         DB::beginTransaction();
-//         try {
-//             // Mapear los tipos enviados ('efectivo','transferencia','debito','credito','cheque','online','credito_deuda')
-//             // a los valores del ENUM existentes en la base de datos
-//             $map = [
-//                 'efectivo' => 'Efectivo',
-//                 'transferencia' => 'Transferencia',
-//                 'debito' => 'Tarjeta Debito',
-//                 'credito' => 'Tarjeta Credito',
-//                 'cheque' => 'Cheque',
-//                 'online' => 'Pago Online',
-//                 'credito_deuda' => 'Credito (Deuda)'
-//             ];
-
-//             $primaryTipo = null;
-//             if (!empty($data['metodoPago1']['tipo'])) $primaryTipo = $data['metodoPago1']['tipo'];
-//             if (empty($primaryTipo) && !empty($data['metodoPago2']['tipo'])) $primaryTipo = $data['metodoPago2']['tipo'];
-
-//             $metodoPagoEnum = $map[$primaryTipo] ?? null;
-
-//             $ventaModel = Venta::create([
-//                 'fecha' => $data['fecha'],
-//                 'sucursal_id' => $data['sucursal'] ?? null,
-//                 'sucursal_nombre' => isset($data['sucursal']) && is_string($data['sucursal']) ? $data['sucursal'] : null,
-//                 'cliente_id' => $data['cliente'] ?? null,
-//                 'documentoVenta' => $data['documentoVenta'] ?? null,
-//                 'folioVenta' => $data['folioVenta'] ?? null,
-//                 'subtotal' => $subtotal,
-//                 'iva' => $iva,
-//                 'total' => $total,
-//                 // Guardar valor compatible con ENUM actual para evitar truncamiento
-//                 'metodos_pago' => $metodoPagoEnum,
-//                 // Guardar detalle completo en columna nueva (JSON/Text)
-//                 'metodos_pago_detalle' => [$data['metodoPago1'] ?? [], $data['metodoPago2'] ?? []],
-//                 'observaciones' => $data['observaciones'] ?? null,
-//                 'estado' => $data['estado'] ?? 'REGISTRADA',
-//             ]);
-
-//             foreach ($data['items'] as $it) {
-//                 $cantidad = isset($it['cantidad']) ? (float)$it['cantidad'] : 1;
-//                 $precio = isset($it['precioUnitario']) ? (float)$it['precioUnitario'] : 0;
-//                 $total_linea = round($cantidad * $precio, 2);
-
-//                 VentaDetalle::create([
-//                     'venta_id' => $ventaModel->id,
-//                     'descripcion' => $it['descripcion'] ?? null,
-//                     'cantidad' => $cantidad,
-//                     'precio_unitario' => $precio,
-//                     'total_linea' => $total_linea,
-//                 ]);
-//             }
-
-//             DB::commit();
-//             $ventaSaved = $ventaModel->load('detalles');
-//         } catch (\Exception $e) {
-//             DB::rollBack();
-//             Log::error('Error saving venta to DB', [
-//                 'message' => $e->getMessage(),
-//                 'trace' => $e->getTraceAsString(),
-//                 'payload' => $data,
-//             ]);
-//             $dbError = $e->getMessage();
-//             // fallback: guardar en sesión/archivo
-//             $venta = [
-//                 'id' => $id,
-//                 'fecha' => $data['fecha'],
-//                 'sucursal' => $data['sucursal'],
-//                 'documentoVenta' => $data['documentoVenta'] ?? null,
-//                 'folioVenta' => $data['folioVenta'] ?? null,
-//                 'cliente' => $data['cliente'] ?? null,
-//                 'items' => $data['items'],
-//                 'subtotal' => $subtotal,
-//                 'iva' => $iva,
-//                 'total' => $total,
-//                 'metodos_pago' => [$data['metodoPago1'] ?? [], $data['metodoPago2'] ?? []],
-//                 'observaciones' => $data['observaciones'] ?? null,
-//                 'estado' => $data['estado'] ?? 'REGISTRADA',
-//                 'created_at' => now()->toDateTimeString(),
-//             ];
-
-//             $ventas[] = $venta;
-//             Session::put('mock_ventas', $ventas);
-//             try {
-//                 $path = storage_path('app/mock_ventas.json');
-//                 $existing = [];
-//                 if (file_exists($path)) {
-//                     $existing = json_decode(file_get_contents($path), true) ?: [];
-//                 }
-//                 $existing[] = $venta;
-//                 file_put_contents($path, json_encode($existing, JSON_PRETTY_PRINT));
-//             } catch (\Exception $e2) {
-//                 // ignore
-//             }
-//         }
-
-//         if ($ventaSaved) {
-//             return response()->json(['data' => $ventaSaved, 'saved_in_db' => true], 201);
-//         }
-
-//         return response()->json(['data' => $venta, 'saved_in_db' => false, 'error' => $dbError], 201);
-//     }
-
-//     public function update(Request $request, $id)
-//     {
-//         $ventas = Session::get('mock_ventas', []);
-//         $found = false;
-//         foreach ($ventas as &$v) {
-//             if ($v['id'] == $id) {
-//                 $v = array_merge($v, $request->all());
-//                 $found = true;
-//                 break;
-//             }
-//         }
-//         if (!$found) return response()->json(['message' => 'Venta no encontrada'], 404);
-//         Session::put('mock_ventas', $ventas);
-//         return response()->json(['data' => $v]);
-//     }
-
-//     public function destroy($id)
-//     {
-//         $ventas = Session::get('mock_ventas', []);
-//         $new = [];
-//         $deleted = null;
-//         foreach ($ventas as $v) {
-//             if ($v['id'] == $id) {
-//                 $deleted = $v;
-//                 continue;
-//             }
-//             $new[] = $v;
-//         }
-//         Session::put('mock_ventas', $new);
-//         if (!$deleted) return response()->json(['message' => 'Venta no encontrada'], 404);
-//         return response()->json(['message' => 'Venta eliminada', 'data' => $deleted]);
-//     }
-
-//     public function export(Request $request)
-//     {
-//         $ventas = $this->index($request)->getData()->data;
-
-//         $response = new StreamedResponse(function () use ($ventas) {
-//             $out = fopen('php://output', 'w');
-//             fputcsv($out, ['id', 'fecha', 'sucursal', 'subtotal', 'iva', 'total', 'observaciones']);
-//             foreach ($ventas as $v) {
-//                 fputcsv($out, [
-//                     $v->id ?? $v['id'] ?? '',
-//                     $v->fecha ?? '',
-//                     $v->sucursal ?? '',
-//                     $v->subtotal ?? '',
-//                     $v->iva ?? '',
-//                     $v->total ?? '',
-//                     $v->observaciones ?? '',
-//                 ]);
-//             }
-//             fclose($out);
-//         });
-
-//         $filename = 'ventas_export_' . date('Ymd_His') . '.csv';
-
-//         $response->headers->set('Content-Type', 'text/csv');
-//         $response->headers->set('Content-Disposition', 'attachment; filename="' . $filename . '"');
-
-//         return $response;
-//     }
-// }

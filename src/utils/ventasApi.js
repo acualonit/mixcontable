@@ -1,5 +1,8 @@
 import { API_BASE_URL } from './configApi';
 
+// En entorno de desarrollo usamos el endpoint público temporal añadido en el backend
+const USE_PUBLIC_VENTAS_IN_DEV = import.meta.env.DEV === true;
+
 async function fetchJson(path, opts = {}) {
   const url = `${API_BASE_URL}${path}`;
   const defaultOpts = { credentials: 'include', headers: { 'Content-Type': 'application/json', Accept: 'application/json' } };
@@ -24,9 +27,19 @@ async function fetchJson(path, opts = {}) {
   return data;
 }
 
-export const listVentas = (params = {}) => {
+export const listVentas = async (params = {}) => {
   const query = new URLSearchParams(params).toString();
-  return fetchJson(`/ventas${query ? `?${query}` : ''}`);
+  const tryPaths = USE_PUBLIC_VENTAS_IN_DEV ? ['/ventas/public', '/ventas'] : ['/ventas'];
+  for (const base of tryPaths) {
+    const fullPath = `${base}${query ? `?${query}` : ''}`;
+    console.debug('[ventasApi] intentando ->', fullPath);
+    try {
+      return await fetchJson(fullPath);
+    } catch (err) {
+      console.warn('[ventasApi] fallo en', fullPath, err.message || err);
+    }
+  }
+  throw new Error('No se pudo obtener la lista de ventas (rutas probadas fallaron).');
 };
 
 export const getVenta = (id) => fetchJson(`/ventas/${id}`);

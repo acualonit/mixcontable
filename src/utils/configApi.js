@@ -1,4 +1,6 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api';
+// En desarrollo usamos el proxy de Vite (`/api`) para evitar problemas CORS.
+// En producción se recomienda definir `VITE_API_URL` con la URL completa del API.
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 async function request(path, { method = 'GET', body, headers = {}, isFormData = false } = {}) {
   const defaultHeaders = {
@@ -50,24 +52,16 @@ export const saveEmpresa = (empresa) => {
 export const fetchSucursales = (empresaId) =>
   request(`/empresas/${empresaId}/sucursales`);
 
-export const fetchAllSucursales = () => request('/sucursales');
-
-// Llamada pública ligera a sucursales (no envía cookies/credenciales)
+// Endpoint público de sucursales: intenta `/sucursales/public` y si no existe cae a `/sucursales`.
 export const fetchPublicSucursales = async () => {
-  // Usar endpoint público específico para evitar middleware/401
-  const url = `${API_BASE_URL}/public/sucursales`;
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!res.ok) {
-    const text = await res.text().catch(() => null);
-    const err = new Error(`Error fetching public sucursales: ${res.status}`);
-    err.status = res.status;
-    err.payload = text;
-    throw err;
-  }
   try {
-    return await res.json();
-  } catch (e) {
-    return null;
+    return await request('/sucursales/public');
+  } catch (err) {
+    try {
+      return await request('/sucursales');
+    } catch (e) {
+      throw err;
+    }
   }
 };
 
@@ -102,22 +96,25 @@ export const resetUsuarioPassword = (usuarioId, payload = {}) =>
 // Clientes
 export const fetchClientes = () => request('/clientes');
 
+// Buscar cliente por RUT. Intenta varias rutas posibles según el backend.
 export const fetchClienteByRut = async (rut) => {
   if (!rut) return null;
+  // Normalizar rut (remover espacios)
+  const r = String(rut).trim();
   try {
-    const res = await request(`/clientes?rut=${encodeURIComponent(rut)}`);
-    const list = Array.isArray(res) ? res : (res?.data ?? []);
-    return list.length ? list[0] : null;
-  } catch (err) {
-    // Fallback: obtener todos y filtrar localmente
+    return await request(`/clientes/rut/${encodeURIComponent(r)}`);
+  } catch (err1) {
     try {
-      const all = await fetchClientes();
-      const arr = Array.isArray(all) ? all : (all?.data ?? []);
-      const cleaned = rut.replace(/[^0-9Kk]/g, '');
-      return arr.find(c => (c.rut || '').replace(/[^0-9Kk]/g, '') === cleaned) || null;
-    } catch (e) {
-      console.error('Error buscando cliente por RUT', e);
-      return null;
+      return await request(`/clientes/${encodeURIComponent(r)}`);
+    } catch (err2) {
+      try {
+        const q = new URLSearchParams({ rut: r }).toString();
+        const res = await request(`/clientes?${q}`);
+        if (Array.isArray(res)) return res[0] ?? null;
+        return res;
+      } catch (err3) {
+        throw err1;
+      }
     }
   }
 };
