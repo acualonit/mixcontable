@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-function NuevoMovimiento({ onClose, onSave, cuentas = [], initialData = null }) {
+function NuevoMovimiento({ onClose, onSave, cuentas = [], initialData = null, sucursales = [] }) {
   const [formData, setFormData] = useState({
     fecha: new Date().toISOString().split('T')[0],
     tipo: 'ingreso',
@@ -13,8 +13,35 @@ function NuevoMovimiento({ onClose, onSave, cuentas = [], initialData = null }) 
     observaciones: ''
   });
 
+  // flag para indicar que la sucursal fue fijada automáticamente desde la cuenta
+  const [sucursalReadOnly, setSucursalReadOnly] = useState(false);
+
   React.useEffect(() => {
     if (initialData) {
+      // intentar resolver sucursal como id a partir de sucursales prop
+      let sucursalId = initialData.cuenta_sucursal_id ?? initialData.sucursal_id ?? '';
+
+      // si no hay id pero existe nombre en initialData, intentar encontrar id por nombre
+      if (!sucursalId && initialData.cuenta_sucursal_nombre) {
+        const found = sucursales.find(s => (s.nombre || s.name || s.nombre_sucursal || String(s.id)) === initialData.cuenta_sucursal_nombre || String(s.id) === String(initialData.cuenta_sucursal_nombre));
+        if (found) sucursalId = found.id;
+      }
+
+      // si initialData tiene cuenta, intentar resolver la sucursal desde la cuenta seleccionada
+      let cuentaId = initialData.cuenta_id ?? initialData.cuenta ?? '';
+      if (!cuentaId && initialData.cuenta) cuentaId = initialData.cuenta;
+
+      let resolvedSucursal = sucursalId || '';
+      let resolvedSucursalName = '';
+      if (cuentaId) {
+        const selCuenta = cuentas.find(c => String(c.id) === String(cuentaId));
+        if (selCuenta) {
+          // Preferir id_sucursal si viene en la cuenta, sino el nombre
+          resolvedSucursal = selCuenta.id_sucursal ?? selCuenta.cuenta_id_sucursal ?? selCuenta.idSucursal ?? resolvedSucursal;
+          resolvedSucursalName = selCuenta.sucursal_nombre ?? selCuenta.nombre ?? selCuenta.sucursal_name ?? '';
+        }
+      }
+
       setFormData(prev => ({
         ...prev,
         fecha: initialData.fecha ?? prev.fecha,
@@ -22,13 +49,17 @@ function NuevoMovimiento({ onClose, onSave, cuentas = [], initialData = null }) 
         categoria: initialData.categoria ?? initialData.descripcion ?? prev.categoria,
         descripcion: initialData.descripcion ?? prev.descripcion,
         monto: initialData.monto ?? initialData.valor ?? initialData.amount ?? prev.monto,
-        cuenta: initialData.cuenta_id ?? initialData.cuenta ?? prev.cuenta,
+        cuenta: cuentaId ?? prev.cuenta,
         referencia: initialData.referencia ?? prev.referencia,
         observaciones: initialData.observaciones ?? prev.observaciones,
-        sucursal: initialData.cuenta_sucursal_nombre ?? initialData.sucursal ?? prev.sucursal
+        sucursal: resolvedSucursal || (initialData.sucursal ?? prev.sucursal)
       }));
+
+      // si resolvimos sucursal desde la cuenta o initialData la dejamos como readOnly
+      const makeReadOnly = Boolean(resolvedSucursal || (initialData.cuenta_sucursal_nombre));
+      setSucursalReadOnly(makeReadOnly);
     }
-  }, [initialData]);
+  }, [initialData, sucursales, cuentas]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -108,29 +139,26 @@ function NuevoMovimiento({ onClose, onSave, cuentas = [], initialData = null }) 
               </div>
 
               <div className="mb-3">
-                <label className="form-label">Sucursal</label>
-                <input
-                  type="text"
-                  className="form-control"
-                  value={formData.sucursal}
-                  readOnly
-                />
-              </div>
-
-              <div className="mb-3">
                 <label className="form-label">Cuenta</label>
                 <select
                   className="form-select"
                   value={formData.cuenta}
                   onChange={(e) => {
-                    const selectedId = Number(e.target.value);
+                    const selectedId = e.target.value;
                     setFormData((prev) => ({ ...prev, cuenta: selectedId }));
-                    const sel = cuentas.find(c => Number(c.id) === selectedId);
+                    // intentar resolver sucursal desde la cuenta seleccionada
+                    const sel = cuentas.find(c => String(c.id) === String(selectedId));
                     if (sel) {
-                      const nombre = sel.sucursal_nombre ?? sel.nombre ?? sel.name ?? '';
-                      setFormData((prev) => ({ ...prev, sucursal: nombre }));
+                      const idSucursal = sel.id_sucursal ?? sel.cuenta_id_sucursal ?? sel.idSucursal ?? null;
+                      const nombre = sel.sucursal_nombre ?? sel.nombre ?? sel.sucursal_name ?? '';
+                      // preferir id de sucursal si está disponible
+                      const sucVal = idSucursal ?? nombre ?? '';
+                      setFormData((prev) => ({ ...prev, sucursal: sucVal }));
+                      setSucursalReadOnly(Boolean(sucVal));
                     } else {
+                      // si no se encontró la cuenta, limpiar sucursal y permitir seleccionar manualmente
                       setFormData((prev) => ({ ...prev, sucursal: '' }));
+                      setSucursalReadOnly(false);
                     }
                   }}
                   required
@@ -142,6 +170,35 @@ function NuevoMovimiento({ onClose, onSave, cuentas = [], initialData = null }) 
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div className="mb-3">
+                <label className="form-label">Sucursal</label>
+                {sucursalReadOnly ? (
+                  <input type="text" className="form-control" value={(() => {
+                    const id = formData.sucursal;
+                    const found = sucursales.find(s => String(s.id) === String(id));
+                    return found ? (found.nombre || found.name || found.nombre_sucursal || String(found.id)) : (formData.sucursal || '');
+                  })()} readOnly />
+                ) : (
+                  // Si no está fijada, mostrar select editable, pero DESHABILITADO hasta que se elija una cuenta
+                  <select
+                    className="form-select"
+                    value={formData.sucursal}
+                    onChange={(e) => setFormData(prev => ({ ...prev, sucursal: e.target.value }))}
+                    required
+                    disabled={!formData.cuenta}
+                  >
+                    <option value="">{formData.cuenta ? 'Seleccionar sucursal' : 'Selecciona una cuenta primero'}</option>
+                    {sucursales && sucursales.length > 0 ? (
+                      sucursales.map(s => (
+                        <option key={s.id} value={s.id}>{s.nombre || s.name || `Sucursal ${s.id}`}</option>
+                      ))
+                    ) : (
+                      <option value="">No hay sucursales cargadas</option>
+                    )}
+                  </select>
+                )}
               </div>
 
               <div className="mb-3">

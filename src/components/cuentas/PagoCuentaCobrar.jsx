@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { registrarMovimientoEfectivo } from '../../utils/efectivoUtils';
+import { createMovimientoBanco, fetchCuentas } from '../../utils/bancoApi';
 
 function PagoCuentaCobrar({ cuenta, onClose, onSave }) {
   const [formData, setFormData] = useState({
@@ -15,27 +16,31 @@ function PagoCuentaCobrar({ cuenta, onClose, onSave }) {
     observaciones: ''
   });
 
+  const [cuentasBancarias, setCuentasBancarias] = useState([]);
+
+  useEffect(() => {
+    // Cargar cuentas bancarias para uso interno (no mostramos select)
+    (async () => {
+      try {
+        try {
+          const res = await fetchCuentas();
+          const list = Array.isArray(res) ? res : (res?.data ?? []);
+          if (Array.isArray(list)) setCuentasBancarias(list || []);
+        } catch (e) {
+          // ignore
+        }
+      } catch (e) {
+        // ignore
+      }
+    })();
+  }, []);
+
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    // Si el pago es en efectivo y está marcado para incluir en flujo de caja,
-    // registrar el movimiento en efectivo
-    if (formData.incluirFlujoCaja && formData.metodoPago.tipo === 'efectivo') {
-      try {
-        await registrarMovimientoEfectivo({
-          fecha: formData.fecha,
-          valor: parseFloat(formData.monto),
-          detalle: `Cobro cuenta por cobrar - ${cuenta?.cliente} - Doc: ${cuenta?.numeroDocumento}`,
-          tipo: 'ingreso',
-          categoria: 'Cuenta por Cobrar',
-          sucursal: cuenta?.sucursal
-        });
-      } catch (error) {
-        alert(error.message);
-        return;
-      }
-    }
-
+    // Enviar el pago al componente padre; el backend se encargará de registrar
+    // los movimientos en caja o banco para evitar duplicados.
     onSave(formData);
     onClose();
   };
@@ -79,6 +84,8 @@ function PagoCuentaCobrar({ cuenta, onClose, onSave }) {
                 />
               </div>
 
+              {/* Método guardado eliminado por solicitud del cliente */}
+
               <div className="mb-3">
                 <label className="form-label">Método de Pago</label>
                 <select
@@ -97,6 +104,9 @@ function PagoCuentaCobrar({ cuenta, onClose, onSave }) {
                   <option value="cheque">Cheque</option>
                 </select>
               </div>
+
+              {/* Selección de cuenta bancaria para métodos bancarios */}
+              {/* Selección de cuenta bancaria eliminada de la UI; el backend elegirá la cuenta por defecto si no se envía */}
 
               {(formData.metodoPago.tipo === 'debito' || formData.metodoPago.tipo === 'credito') && (
                 <div className="mb-3">

@@ -10,20 +10,91 @@ use Illuminate\Support\Facades\Log;
 
 class BancoController extends Controller
 {
+    protected function movimientoEsDeVenta($mov): bool
+    {
+        if (!$mov) return false;
+
+        $obs = '';
+        foreach (['observaciones', 'observacion', 'notes', 'nota', 'notas'] as $k) {
+            if (isset($mov->{$k}) && $mov->{$k} !== null) { $obs = (string)$mov->{$k}; break; }
+        }
+        $obsLower = strtolower($obs);
+        if (strpos($obsLower, 'origen:venta') !== false || strpos($obsLower, 'origen: venta') !== false) return true;
+        if (strpos($obsLower, 'venta_id:') !== false || strpos($obsLower, 'venta id:') !== false) return true;
+
+        // Fallback suave: descripción tipo "Venta ..." (solo si no hay tag)
+        $desc = '';
+        foreach (['descripcion', 'detalle', 'concepto'] as $k) {
+            if (isset($mov->{$k}) && $mov->{$k} !== null) { $desc = (string)$mov->{$k}; break; }
+        }
+        $descLower = strtolower(trim($desc));
+        if (strpos($descLower, 'venta ') === 0) {
+            // intentar validar referencia contra ventas para evitar falsos positivos
+            $ref = '';
+            foreach (['referencia', 'partida', 'reference'] as $k) {
+                if (isset($mov->{$k}) && $mov->{$k} !== null) { $ref = (string)$mov->{$k}; break; }
+            }
+            $refTrim = trim($ref);
+            try {
+                if (Schema::hasTable('ventas')) {
+                    if ($refTrim !== '' && ctype_digit($refTrim)) {
+                        if (DB::table('ventas')->where('id', (int)$refTrim)->exists()) return true;
+                    }
+                    if ($refTrim !== '' && Schema::hasColumn('ventas', 'folioVenta')) {
+                        if (DB::table('ventas')->where('folioVenta', $refTrim)->exists()) return true;
+                    }
+                }
+            } catch (\Throwable $e) {
+                // ignore
+            }
+        }
+
+        return false;
+    }
+
     // Listar cuentas bancarias
     public function cuentas()
     {
         if (!Schema::hasTable('cuentas_bancarias')) {
             return response()->json(['data' => []]);
         }
+
         $cols = Schema::getColumnListing('cuentas_bancarias');
-        // incluir id_sucursal y nombre de sucursal si existe la tabla
-        $query = DB::table('cuentas_bancarias')->select('cuentas_bancarias.id', 'cuentas_bancarias.banco', 'cuentas_bancarias.numero_cuenta', 'cuentas_bancarias.tipo_cuenta', 'cuentas_bancarias.saldo_inicial', 'cuentas_bancarias.created_at', 'cuentas_bancarias.id_sucursal');
-        if (Schema::hasTable('sucursales')) {
-            $query->leftJoin('sucursales', 'cuentas_bancarias.id_sucursal', '=', 'sucursales.id')
-                  ->addSelect('sucursales.nombre as sucursal_nombre');
+
+        // construir lista de columnas a seleccionar solo si existen
+        $select = [];
+        if (in_array('id', $cols)) $select[] = 'cuentas_bancarias.id';
+        if (in_array('banco', $cols)) $select[] = 'cuentas_bancarias.banco';
+        if (in_array('numero_cuenta', $cols)) $select[] = 'cuentas_bancarias.numero_cuenta';
+        if (in_array('tipo_cuenta', $cols)) $select[] = 'cuentas_bancarias.tipo_cuenta';
+        if (in_array('saldo_inicial', $cols)) $select[] = 'cuentas_bancarias.saldo_inicial';
+        if (in_array('created_at', $cols)) $select[] = 'cuentas_bancarias.created_at';
+        if (in_array('id_sucursal', $cols)) $select[] = 'cuentas_bancarias.id_sucursal';
+
+        // si por cualquier razón no encontramos columnas estándar, siempre seleccionar todas para no romper
+        if (empty($select)) $select = ['cuentas_bancarias.*'];
+
+        $query = DB::table('cuentas_bancarias')->select($select);
+
+        // intentar unir sucursales solo si la tabla y la columna id_sucursal existen
+        if (Schema::hasTable('sucursales') && in_array('id_sucursal', $cols)) {
+            $sCols = Schema::getColumnListing('sucursales');
+            if (in_array('nombre', $sCols)) {
+                $query->leftJoin('sucursales', 'cuentas_bancarias.id_sucursal', '=', 'sucursales.id')
+                      ->addSelect('sucursales.nombre as sucursal_nombre');
+            } else {
+                // join pero sin seleccionar nombre si no existe
+                $query->leftJoin('sucursales', 'cuentas_bancarias.id_sucursal', '=', 'sucursales.id');
+            }
         }
-        $cuentas = $query->get();
+
+        try {
+            $cuentas = $query->get();
+        } catch (\Exception $ex) {
+            Log::error('BancoController.cuentas: error al obtener cuentas', ['ex' => $ex->getMessage()]);
+            return response()->json(['data' => []]);
+        }
+
         return response()->json(['data' => $cuentas]);
     }
 
@@ -171,6 +242,24 @@ class BancoController extends Controller
             }
             if ($request->query('cuenta_id')) $query->where('movimientos_banco.'.$accountCol, $request->query('cuenta_id'));
         }
+        // Incluir nombre de usuario si existe tabla users (similar a EfectivoController)
+        $userCols = Schema::hasTable('users') ? Schema::getColumnListing('users') : [];
+        if (!empty($userCols)) {
+            $candidates = [];
+            foreach (['name', 'nombre', 'nombre_completo', 'email'] as $uc) {
+                if (in_array($uc, $userCols)) $candidates[] = "users.$uc";
+            }
+            $selectUserExpr = "'' as usuario_nombre";
+            if (!empty($candidates)) {
+                $selectUserExpr = 'COALESCE(' . implode(', ', $candidates) . ') as usuario_nombre';
+            }
+            try {
+                $query->leftJoin('users', 'movimientos_banco.user_id', '=', 'users.id')
+                      ->addSelect(DB::raw($selectUserExpr));
+            } catch (\Exception $ex) {
+                // ignore join failures
+            }
+        }
         if (in_array('deleted_at', $cols)) $query->whereNull('movimientos_banco.deleted_at');
         if ($dateCol) $query->orderBy('movimientos_banco.'.$dateCol, 'desc');
 
@@ -181,6 +270,22 @@ class BancoController extends Controller
     // Actualizar movimiento bancario
     public function updateMovimiento(Request $request, $id)
     {
+        // No permitir editar movimientos generados automáticamente desde ventas
+        try {
+            if (Schema::hasTable('movimientos_banco')) {
+                $mov = DB::table('movimientos_banco')->where('id', $id)->first();
+                if ($this->movimientoEsDeVenta($mov)) {
+                    return response()->json(['message' => 'No se puede editar un movimiento proveniente de ventas'], 403);
+                }
+            }
+        } catch (\Throwable $e) {
+            // si falla la detección, continuamos con el flujo normal
+        }
+
+        // Log de depuración: id de usuario autenticado (si existe)
+        try {
+            Log::info('BancoController.updateMovimiento: auth_id', ['auth_id' => \Auth::id(), 'request_user' => optional($request->user())->id]);
+        } catch (\Throwable $e) {}
         $data = $request->validate([
             'fecha' => ['required', 'date'],
             'descripcion' => ['nullable', 'string'],
@@ -209,42 +314,74 @@ class BancoController extends Controller
             'monto' => $pick(['monto', 'valor', 'importe', 'amount']),
             'cuenta_id' => $pick(['cuenta_id', 'cuenta', 'account_id']),
             'referencia' => $pick(['referencia', 'referencia_mov', 'reference']),
-            'observaciones' => $pick(['observaciones', 'observacion', 'notes'])
+            'observaciones' => $pick(['observaciones', 'observacion', 'notes']),
+            // columna opcional para guardar usuario que actualiza el movimiento
+            'usuario' => $pick(['usuario', 'user', 'usuario_id', 'user_id'])
         ];
 
+        // detectar columna real para user_id en la tabla (si existe)
+        $userColDetected = $pick(['user_id', 'usuario', 'usuario_id', 'user', 'userId']);
+
         $update = [];
+        // detectar usuario autenticado para asignar en la actualización
+        $authenticatedUserId = null;
+        try {
+            $u = $request->user();
+            if ($u && isset($u->id)) $authenticatedUserId = $u->id;
+        } catch (\Throwable $e) {
+            $authenticatedUserId = null;
+        }
         foreach ($mapping as $key => $col) {
             if ($col && array_key_exists($key, $data)) {
                 $val = $data[$key];
                 if ($key === 'monto' && $val !== null) $val = (float)$val;
+                if ($key === 'usuario') {
+                    // preferir usuario autenticado si existe
+                    $val = $authenticatedUserId ?? ($data['usuario'] ?? $val);
+                }
                 if ($key === 'categoria' && $val !== null) {
                     $v = strtolower(trim($val));
                     if (in_array($v, ['transferencia','transfer','trans'])) $val = 'Transferencia';
                     elseif (in_array($v, ['cheque','check'])) $val = 'Cheque';
-                    elseif (strpos($v, 'transbank') !== false) $val = 'Transbank';
+                    elseif (strpos($v, 'pago online') !== false || strpos($v, 'online') !== false) $val = 'Pago Online';
+                    elseif (strpos($v, 'tarjeta debito') !== false || strpos($v, 'debito') !== false) $val = 'Tarjeta Debito';
+                    elseif (strpos($v, 'tarjeta credito') !== false || strpos($v, 'credito') !== false || strpos($v, 'transbank') !== false) $val = 'Tarjeta Credito';
                     elseif (strpos($v, 'deposit') !== false) $val = 'Deposito Bancario';
                     else $val = ucfirst($val);
+
+                    // Si la columna categoria es ENUM y no acepta el valor, omitimos para no fallar (usa default DB)
+                    try {
+                        $colInfo = DB::select("SHOW COLUMNS FROM movimientos_banco WHERE Field = ?", [$col]);
+                        if (!empty($colInfo) && isset($colInfo[0]->Type) && stripos($colInfo[0]->Type, 'enum') !== false) {
+                            preg_match_all("/\\'([^']+)\\'/", $colInfo[0]->Type, $matches);
+                            $allowed = $matches[1] ?? [];
+                            if (!empty($allowed)) {
+                                $found = in_array($val, $allowed, true) || in_array(strtolower($val), array_map('strtolower', $allowed), true);
+                                if (!$found) {
+                                    continue;
+                                }
+                            }
+                        }
+                    } catch (\Throwable $e) {
+                        // ignore
+                    }
                 }
                 $update[$col] = $val;
             }
         }
 
-        if (in_array('categoria', $cols) && !array_key_exists('categoria', $update) && array_key_exists('categoria', $data)) {
-            $val = $data['categoria'];
-            $v = strtolower(trim($val));
-            if (in_array($v, ['transferencia','transfer','trans'])) $val = 'Transferencia';
-            elseif (in_array($v, ['cheque','check'])) $val = 'Cheque';
-            elseif (strpos($v, 'transbank') !== false) $val = 'Transbank';
-            elseif (strpos($v, 'deposit') !== false) $val = 'Deposito Bancario';
-            else $val = ucfirst($val);
-            $update['categoria'] = $val;
-        }
-        if (in_array('referencia', $cols) && !array_key_exists('referencia', $update) && array_key_exists('referencia', $data)) {
-            $update['referencia'] = $data['referencia'];
-        }
-        if (in_array('observaciones', $cols) && !array_key_exists('observaciones', $update) && array_key_exists('observaciones', $data)) {
-            $update['observaciones'] = $data['observaciones'];
-        }
+        // En actualizaciones, forzar que la columna de usuario registre quien editó
+        try {
+            $authId = $authenticatedUserId ?? \Auth::id();
+            Log::info('BancoController.updateMovimiento: userColDetected/authId', ['userCol' => $userColDetected, 'authId' => $authId]);
+            if ($authId !== null && $userColDetected) {
+                $update[$userColDetected] = $authId;
+            }
+            // forzar user_id si existe en la tabla
+            if ($authId !== null && in_array('user_id', $cols)) {
+                $update['user_id'] = $authId;
+            }
+        } catch (\Throwable $e) { /* ignore */ }
 
         if (!empty($mapping['tipo']) && isset($data['tipo'])) {
             $typeCol = $mapping['tipo'];
@@ -335,6 +472,28 @@ class BancoController extends Controller
     // Crear movimiento bancario
     public function storeMovimiento(Request $request)
     {
+        // Log de depuración: id de usuario autenticado (si existe)
+        try {
+            Log::info('BancoController.storeMovimiento: auth_id', ['auth_id' => \Auth::id()]);
+        } catch (\Throwable $e) {}
+        // Normalizar aliases comunes desde el frontend para evitar 422 por nombres distintos
+        // (p.ej. cuenta en vez de cuenta_id, valor en vez de monto, id_sucursal en vez de sucursal)
+        $request->merge([
+            'cuenta_id' => $request->input('cuenta_id')
+                ?? $request->input('cuentaId')
+                ?? $request->input('cuenta')
+                ?? $request->input('id_cuenta')
+                ?? $request->input('account_id'),
+            'monto' => $request->input('monto')
+                ?? $request->input('valor')
+                ?? $request->input('importe')
+                ?? $request->input('amount'),
+            // el backend hoy valida `sucursal` como string, pero aceptamos id_sucursal/sucursal_id
+            'sucursal' => $request->input('sucursal')
+                ?? $request->input('id_sucursal')
+                ?? $request->input('sucursal_id'),
+        ]);
+
         $data = $request->validate([
             'fecha' => ['required', 'date'],
             'descripcion' => ['nullable', 'string'],
@@ -363,10 +522,23 @@ class BancoController extends Controller
             'monto' => $pick(['monto', 'valor', 'importe', 'amount']),
             'cuenta_id' => $pick(['cuenta_id', 'cuenta', 'account_id']),
             'referencia' => $pick(['referencia', 'referencia_mov', 'reference']),
-            'observaciones' => $pick(['observaciones', 'observacion', 'notes'])
+            'observaciones' => $pick(['observaciones', 'observacion', 'notes']),
+            // columna opcional para guardar usuario que crea el movimiento
+            'usuario' => $pick(['usuario', 'user', 'usuario_id', 'user_id'])
         ];
 
+        // detectar columna real para user_id en la tabla (si existe)
+        $userColDetected = $pick(['user_id', 'usuario', 'usuario_id', 'user', 'userId']);
+
         $insert = [];
+        // Determinar user_id autenticado (si hay session/jwt)
+        $authenticatedUserId = null;
+        try {
+            $u = $request->user();
+            if ($u && isset($u->id)) $authenticatedUserId = $u->id;
+        } catch (\Throwable $e) {
+            $authenticatedUserId = null;
+        }
         foreach ($mapping as $key => $col) {
             if ($col && array_key_exists($key, $data)) {
                 $val = $data[$key];
@@ -376,13 +548,51 @@ class BancoController extends Controller
                     $v = strtolower(trim($val));
                     if (in_array($v, ['transferencia','transfer','trans'])) $val = 'Transferencia';
                     elseif (in_array($v, ['cheque','check'])) $val = 'Cheque';
-                    elseif (strpos($v, 'transbank') !== false) $val = 'Transbank';
+                    elseif (strpos($v, 'pago online') !== false || strpos($v, 'online') !== false) $val = 'Pago Online';
+                    elseif (strpos($v, 'tarjeta debito') !== false || strpos($v, 'debito') !== false) $val = 'Tarjeta Debito';
+                    elseif (strpos($v, 'tarjeta credito') !== false || strpos($v, 'credito') !== false || strpos($v, 'transbank') !== false) $val = 'Tarjeta Credito';
                     elseif (strpos($v, 'deposit') !== false) $val = 'Deposito Bancario';
                     else $val = ucfirst($val);
+
+                    // Si la columna categoria es ENUM y no acepta el valor, omitimos para no fallar (usa default DB)
+                    try {
+                        $colInfo = DB::select("SHOW COLUMNS FROM movimientos_banco WHERE Field = ?", [$col]);
+                        if (!empty($colInfo) && isset($colInfo[0]->Type) && stripos($colInfo[0]->Type, 'enum') !== false) {
+                            preg_match_all("/\\'([^']+)\\'/", $colInfo[0]->Type, $matches);
+                            $allowed = $matches[1] ?? [];
+                            if (!empty($allowed)) {
+                                $found = in_array($val, $allowed, true) || in_array(strtolower($val), array_map('strtolower', $allowed), true);
+                                if (!$found) {
+                                    continue;
+                                }
+                            }
+                        }
+                    } catch (\Throwable $e) {
+                        // ignore
+                    }
+                }
+                // Si la columna corresponde a usuario, preferir el usuario autenticado
+                if ($key === 'usuario') {
+                    $val = $authenticatedUserId ?? ($data['usuario'] ?? $val);
                 }
                 $insert[$col] = $val;
             }
         }
+
+        // Si existe usuario autenticado, asegurar que se guarde su id en la columna detectada
+        try {
+            $authId = $authenticatedUserId ?? \Auth::id();
+            Log::info('BancoController.storeMovimiento: userColDetected/authId', ['userCol' => $userColDetected, 'authId' => $authId]);
+            if ($authId !== null && $userColDetected) {
+                if (!array_key_exists($userColDetected, $insert)) {
+                    $insert[$userColDetected] = $authId;
+                }
+            }
+            // si por algún motivo no detectó la columna pero existe user_id, forzarla
+            if ($authId !== null && in_array('user_id', $cols) && !array_key_exists('user_id', $insert)) {
+                $insert['user_id'] = $authId;
+            }
+        } catch (\Throwable $e) { /* ignore */ }
 
         // Fallbacks: si la tabla tiene columnas estándar pero el mapping dinámico no las detectó,
         // forzamos guardarlas con el nombre de columna esperado (solo si vienen en la request)
@@ -391,10 +601,31 @@ class BancoController extends Controller
             $v = strtolower(trim($val));
             if (in_array($v, ['transferencia','transfer','trans'])) $val = 'Transferencia';
             elseif (in_array($v, ['cheque','check'])) $val = 'Cheque';
-            elseif (strpos($v, 'transbank') !== false) $val = 'Transbank';
+            elseif (strpos($v, 'pago online') !== false || strpos($v, 'online') !== false) $val = 'Pago Online';
+            elseif (strpos($v, 'tarjeta debito') !== false || strpos($v, 'debito') !== false) $val = 'Tarjeta Debito';
+            elseif (strpos($v, 'tarjeta credito') !== false || strpos($v, 'credito') !== false || strpos($v, 'transbank') !== false) $val = 'Tarjeta Credito';
             elseif (strpos($v, 'deposit') !== false) $val = 'Deposito Bancario';
             else $val = ucfirst($val);
-            $insert['categoria'] = $val;
+
+            try {
+                $colInfo = DB::select("SHOW COLUMNS FROM movimientos_banco WHERE Field = ?", ['categoria']);
+                if (!empty($colInfo) && isset($colInfo[0]->Type) && stripos($colInfo[0]->Type, 'enum') !== false) {
+                    preg_match_all("/\\'([^']+)\\'/", $colInfo[0]->Type, $matches);
+                    $allowed = $matches[1] ?? [];
+                    if (!empty($allowed)) {
+                        $found = in_array($val, $allowed, true) || in_array(strtolower($val), array_map('strtolower', $allowed), true);
+                        if ($found) {
+                            $insert['categoria'] = $val;
+                        }
+                    } else {
+                        $insert['categoria'] = $val;
+                    }
+                } else {
+                    $insert['categoria'] = $val;
+                }
+            } catch (\Throwable $e) {
+                // ignore: si falla, omitimos categoria
+            }
         }
         if (in_array('referencia', $cols) && !array_key_exists('referencia', $insert) && array_key_exists('referencia', $data)) {
             $insert['referencia'] = $data['referencia'];
@@ -476,6 +707,18 @@ class BancoController extends Controller
     // Eliminar movimiento
     public function destroyMovimiento($id)
     {
+        // No permitir eliminar movimientos generados automáticamente desde ventas
+        try {
+            if (Schema::hasTable('movimientos_banco')) {
+                $mov = DB::table('movimientos_banco')->where('id', $id)->first();
+                if ($this->movimientoEsDeVenta($mov)) {
+                    return response()->json(['message' => 'No se puede eliminar un movimiento proveniente de ventas'], 403);
+                }
+            }
+        } catch (\Throwable $e) {
+            // si falla la detección, continuamos
+        }
+
         $cols = Schema::getColumnListing('movimientos_banco');
         try {
             if (in_array('deleted_at', $cols)) {
@@ -488,5 +731,11 @@ class BancoController extends Controller
             return response()->json(['message' => 'Error al eliminar', 'error' => $ex->getMessage()], 500);
         }
         return response()->json(['message' => 'Eliminado']);
+    }
+
+    // Alias para compatibilidad con la ruta existente
+    public function deleteMovimiento($id)
+    {
+        return $this->destroyMovimiento($id);
     }
 }

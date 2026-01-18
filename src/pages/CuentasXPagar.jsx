@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import PagoCuentaPorPagar from '../components/cuentas/PagoCuentaPorPagar';
 import HistorialPagosPagar from '../components/cuentas/HistorialPagosPagar';
 import CuentasPagarEliminadas from '../components/cuentas/CuentasPagarEliminadas';
 import DetalleCuentaPagar from '../components/cuentas/DetalleCuentaPagar';
 import { exportToExcel } from '../utils/exportUtils';
+import { listVentas } from '../utils/ventasApi';
 
 function CuentasXPagar() {
   const [filtros, setFiltros] = useState({
@@ -18,43 +19,84 @@ function CuentasXPagar() {
   const [showCuentasEliminadas, setShowCuentasEliminadas] = useState(false);
   const [cuentaSeleccionada, setCuentaSeleccionada] = useState(null);
   
-  // Agregamos el estado para las cuentas
-  const [cuentas] = useState([
-    {
-      origen: 'Compra Insumos',
-      proveedor: 'Proveedor A',
-      rut: '76.543.210-K',
-      documento: 'Factura Afecta a IVA N° 001',
-      fechaEmision: '2023-12-01',
-      fechaVencimiento: '2023-12-15',
-      diasMora: 5,
-      montoTotal: 1500000,
-      montoPagado: 500000,
-      estado: 'pendiente',
-      historialPagos: [
-        {
-          fecha: '2023-12-05',
-          monto: 500000,
-          metodoPago: 'Transferencia',
-          comprobante: 'TR-001',
-          usuario: 'Juan Pérez'
-        }
-      ]
-    },
-    {
-      origen: 'Gastos',
-      proveedor: 'Proveedor B',
-      rut: '77.654.321-0',
-      documento: 'Factura Afecta a IVA N° 002',
-      fechaEmision: '2023-12-05',
-      fechaVencimiento: '2023-12-20',
-      diasMora: 0,
-      montoTotal: 800000,
-      montoPagado: 0,
-      estado: 'pendiente',
-      historialPagos: []
-    }
-  ]);
+  const [cuentas, setCuentas] = useState([]);
+  const [cargando, setCargando] = useState(false);
+  const [errorCarga, setErrorCarga] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    const cargar = async () => {
+      setCargando(true);
+      setErrorCarga('');
+      try {
+        const res = await listVentas({ metodos_pago: 'Credito (Deuda)', per_page: 500 });
+        const ventas = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
+
+        const hoy = new Date();
+        const normalizarFecha = (value) => {
+          if (!value) return '';
+          const s = String(value);
+          // soporta 'YYYY-MM-DD' o timestamps
+          if (s.length >= 10) return s.slice(0, 10);
+          return s;
+        };
+        const diasEntre = (desde, hasta) => {
+          try {
+            const d1 = new Date(desde);
+            const d2 = new Date(hasta);
+            const diff = Math.floor((d2 - d1) / (1000 * 60 * 60 * 24));
+            return Number.isFinite(diff) ? diff : 0;
+          } catch {
+            return 0;
+          }
+        };
+
+        const cuentasMap = ventas
+          .filter(v => String(v.metodos_pago || '').toLowerCase() === 'credito (deuda)')
+          .map(v => {
+            const clienteNombre = v?.cliente?.nombre || v?.cliente?.razon_social || v?.cliente_nombre || v?.nombre_cliente || 'Cliente';
+            const clienteRut = v?.cliente?.rut || v?.cliente_rut || v?.rut_cliente || '-';
+            const fechaEmision = normalizarFecha(v?.fecha || v?.created_at);
+            const fechaVencimiento = normalizarFecha(v?.fecha_final || v?.fecha_vencimiento || v?.fechaVencimiento || v?.vencimiento || v?.fecha || v?.created_at);
+            const diasMora = fechaVencimiento ? Math.max(0, diasEntre(fechaVencimiento, hoy)) : 0;
+            const montoTotal = Number(v?.total || v?.monto_total || v?.monto || 0);
+
+            return {
+              origen: 'Venta (Crédito)',
+              proveedor: clienteNombre,
+              rut: clienteRut,
+              documento: `Venta N° ${v?.folioVenta ?? v?.folio ?? v?.id ?? ''}`.trim(),
+              fechaEmision,
+              fechaVencimiento,
+              diasMora,
+              montoTotal,
+              montoPagado: 0,
+              estado: 'pendiente',
+              historialPagos: [],
+              ventaOriginal: v,
+            };
+          });
+
+        if (!cancelled) setCuentas(cuentasMap);
+      } catch (e) {
+        if (!cancelled) setErrorCarga(e?.message || 'Error al cargar cuentas por pagar');
+      } finally {
+        if (!cancelled) setCargando(false);
+      }
+    };
+    cargar();
+    return () => { cancelled = true; };
+  }, []);
+
+  const cuentasFiltradas = useMemo(() => {
+    return cuentas.filter(c => {
+      if (filtros.fecha && c.fechaEmision !== filtros.fecha) return false;
+      if (filtros.proveedor && !String(c.proveedor || '').toLowerCase().includes(String(filtros.proveedor).toLowerCase())) return false;
+      if (filtros.documento && !String(c.documento || '').toLowerCase().includes(String(filtros.documento).toLowerCase())) return false;
+      if (filtros.estado && c.estado !== filtros.estado) return false;
+      return true;
+    });
+  }, [cuentas, filtros]);
 
   const handleFiltroChange = (campo, valor) => {
     setFiltros(prev => ({
@@ -64,7 +106,7 @@ function CuentasXPagar() {
   };
 
   const handleExportExcel = () => {
-    const dataToExport = cuentas.map(cuenta => ({
+    const dataToExport = cuentasFiltradas.map(cuenta => ({
       Origen: cuenta.origen,
       Proveedor: cuenta.proveedor,
       RUT: cuenta.rut,
@@ -177,8 +219,8 @@ function CuentasXPagar() {
           <div className="card bg-danger text-white">
             <div className="card-body">
               <h6 className="card-title">Total por Pagar</h6>
-              <h3>$8,000,000</h3>
-              <small>15 cuentas pendientes</small>
+              <h3>${cuentasFiltradas.reduce((sum, c) => sum + (c.montoTotal - c.montoPagado), 0).toLocaleString()}</h3>
+              <small>{cuentasFiltradas.length} cuentas</small>
             </div>
           </div>
         </div>
@@ -186,8 +228,8 @@ function CuentasXPagar() {
           <div className="card bg-success text-white">
             <div className="card-body">
               <h6 className="card-title">Pagado este Mes</h6>
-              <h3>$3,500,000</h3>
-              <small>8 cuentas pagadas</small>
+              <h3>${cuentasFiltradas.reduce((sum, c) => sum + c.montoPagado, 0).toLocaleString()}</h3>
+              <small>según datos actuales</small>
             </div>
           </div>
         </div>
@@ -195,8 +237,8 @@ function CuentasXPagar() {
           <div className="card bg-warning text-dark">
             <div className="card-body">
               <h6 className="card-title">Por Vencer</h6>
-              <h3>$2,500,000</h3>
-              <small>5 cuentas próximas</small>
+              <h3>${cuentasFiltradas.filter(c => (c.diasMora || 0) === 0).reduce((sum, c) => sum + (c.montoTotal - c.montoPagado), 0).toLocaleString()}</h3>
+              <small>sin mora</small>
             </div>
           </div>
         </div>
@@ -204,12 +246,19 @@ function CuentasXPagar() {
           <div className="card bg-danger text-white">
             <div className="card-body">
               <h6 className="card-title">Vencidas</h6>
-              <h3>$2,000,000</h3>
-              <small>2 cuentas vencidas</small>
+              <h3>${cuentasFiltradas.filter(c => (c.diasMora || 0) > 0).reduce((sum, c) => sum + (c.montoTotal - c.montoPagado), 0).toLocaleString()}</h3>
+              <small>{cuentasFiltradas.filter(c => (c.diasMora || 0) > 0).length} cuentas en mora</small>
             </div>
           </div>
         </div>
       </div>
+
+      {(cargando || errorCarga) && (
+        <div className="mb-3">
+          {cargando && <div className="alert alert-info mb-0">Cargando cuentas por pagar (ventas Crédito Deuda)...</div>}
+          {!cargando && errorCarga && <div className="alert alert-danger mb-0">{errorCarga}</div>}
+        </div>
+      )}
 
       <div className="card">
         <div className="card-header bg-danger text-white">
@@ -235,7 +284,7 @@ function CuentasXPagar() {
                 </tr>
               </thead>
               <tbody>
-                {cuentas.map((cuenta, index) => (
+                {cuentasFiltradas.map((cuenta, index) => (
                   <tr key={index}>
                     <td>{cuenta.origen}</td>
                     <td>{cuenta.proveedor}</td>
@@ -288,10 +337,10 @@ function CuentasXPagar() {
               <tfoot className="table-light">
                 <tr className="fw-bold">
                   <td colSpan="7">TOTAL</td>
-                  <td>${cuentas.reduce((sum, cuenta) => sum + cuenta.montoTotal, 0).toLocaleString()}</td>
-                  <td>${cuentas.reduce((sum, cuenta) => sum + cuenta.montoPagado, 0).toLocaleString()}</td>
+                  <td>${cuentasFiltradas.reduce((sum, cuenta) => sum + cuenta.montoTotal, 0).toLocaleString()}</td>
+                  <td>${cuentasFiltradas.reduce((sum, cuenta) => sum + cuenta.montoPagado, 0).toLocaleString()}</td>
                   <td className="text-danger">
-                    ${cuentas.reduce((sum, cuenta) => sum + (cuenta.montoTotal - cuenta.montoPagado), 0).toLocaleString()}
+                    ${cuentasFiltradas.reduce((sum, cuenta) => sum + (cuenta.montoTotal - cuenta.montoPagado), 0).toLocaleString()}
                   </td>
                   <td colSpan="2"></td>
                 </tr>

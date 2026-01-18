@@ -1,5 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { fetchEmpresas, fetchSucursales, fetchClienteByRut } from '../../utils/configApi';
+import { API_BASE_URL } from '../../utils/configApi';
+
+// Mapea las claves internas del select a los literales esperados por el backend (ENUM)
+const METODO_PAGO_ENUM_MAP = {
+  efectivo: 'Efectivo',
+  transferencia: 'Transferencia',
+  debito: 'Tarjeta Debito',
+  credito: 'Tarjeta Credito',
+  cheque: 'Cheque',
+  online: 'Pago Online',
+  credito_deuda: 'Credito (Deuda)',
+};
 
 function NuevaVenta({ onClose, onSave, initialData }) {
   const [formData, setFormData] = useState({
@@ -19,7 +31,9 @@ function NuevaVenta({ onClose, onSave, initialData }) {
       monto: ''
     },
     incluirFlujoCaja: true,
-    observaciones: ''
+    observaciones: '',
+    fecha_final: '', // nuevo campo para crédito (deuda)
+    cuenta_bancaria_id: '' // nueva propiedad para seleccionar cuenta bancaria destino
   });
 
   // Cuando se pasa initialData precargar el formulario para edición
@@ -104,7 +118,8 @@ function NuevaVenta({ onClose, onSave, initialData }) {
           return parsed;
         })(),
         incluirFlujoCaja: prev.incluirFlujoCaja,
-        observaciones: initialData.observaciones || prev.observaciones
+        observaciones: initialData.observaciones || prev.observaciones,
+        fecha_final: initialData.fecha_final ? initialData.fecha_final.toString().slice(0,10) : prev.fecha_final
       }));
 
       // Si initialData contiene cliente_id (o cliente), intentar cargar datos del cliente para mostrar en el formulario
@@ -140,6 +155,26 @@ function NuevaVenta({ onClose, onSave, initialData }) {
 
   const [clienteBuscado, setClienteBuscado] = useState(null);
   const [sucursales, setSucursales] = useState([]);
+  const [cuentasBancarias, setCuentasBancarias] = useState([]);
+  const [loadingCuentasBancarias, setLoadingCuentasBancarias] = useState(false);
+
+  // Si existe una cuenta bancaria asociada a la sucursal seleccionada, seleccionar automáticamente
+  React.useEffect(() => {
+    try {
+      const sucId = formData.sucursal;
+      if (!sucId || !cuentasBancarias || cuentasBancarias.length === 0) return;
+      // Si el usuario ya seleccionó explícitamente una cuenta, no sobrescribir
+      if (formData.cuenta_bancaria_id) return;
+      // Buscar cuenta que coincida con la sucursal (varios nombres de campo posibles)
+      const match = cuentasBancarias.find(c => String(c.id_sucursal ?? c.cuenta_id_sucursal ?? c.sucursal_id ?? c.sucursal ?? c.idSucursal ?? '') === String(sucId) || String(c.sucursal_nombre ?? c.nombre ?? c.bank ?? '') === String(sucId));
+      if (match) {
+        setFormData(prev => ({ ...prev, cuenta_bancaria_id: match.id }));
+        console.debug('[NuevaVenta] cuenta bancaria auto-seleccionada para sucursal', sucId, '=>', match.id);
+      }
+    } catch (e) {
+      console.warn('Error al auto-seleccionar cuenta bancaria:', e);
+    }
+  }, [formData.sucursal, cuentasBancarias]);
 
   useEffect(() => {
     let mounted = true;
@@ -160,6 +195,21 @@ function NuevaVenta({ onClose, onSave, initialData }) {
         if (mounted) setSucursales([]);
       }
     })();
+
+    // Cargar cuentas bancarias opcionalmente para permitir seleccionar destino de pagos bancarios
+    (async () => {
+      setLoadingCuentasBancarias(true);
+      try {
+        const r = await fetch(`${API_BASE_URL}/banco/cuentas`, { credentials: 'include' });
+        const json = await r.json().catch(() => null);
+        const cuentasList = Array.isArray(json) ? json : (json?.data ?? json?.cuentas ?? []);
+        if (mounted) setCuentasBancarias(cuentasList || []);
+      } catch (e) {
+        console.warn('No se pudieron cargar cuentas bancarias:', e.message || e);
+        if (mounted) setCuentasBancarias([]);
+      } finally { if (mounted) setLoadingCuentasBancarias(false); }
+    })();
+    
     return () => { mounted = false; };
   }, []);
 
@@ -210,16 +260,37 @@ function NuevaVenta({ onClose, onSave, initialData }) {
     }));
   };
 
-  const calcularSubtotal = () => {
-    return formData.items.reduce((total, item) => {
-      const cantidad = Number(item.cantidad || 0);
-      const precio = Number(item.precioUnitario || 0);
-      return total + (cantidad * precio);
-    }, 0);
+  // Formatear fecha a DD/MM/YYYY para mostrar en la UI
+  const formatDate = (val) => {
+    const d = parseDate(val);
+    if (!d) return '';
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    return `${dd}/${mm}/${yyyy}`;
   };
 
-  const calcularIVA = (subtotal) => {
-    return subtotal * 0.19; // IVA Chile: 19%
+  // --------------------------------------------------
+  // Totales: comportamiento similar a Compras
+  // Si el documento es afecto a IVA, el precio unitario se considera CON IVA
+  // y calculamos subtotal = totalConIva / 1.19, iva = totalConIva - subtotal
+  const DOCUMENTOS_AFECTOS_IVA = ['factura_afecta', 'boleta_afecta', 'voucher_credito', 'voucher_debito'];
+
+  const calcularTotales = () => {
+    const totalConIva = (formData.items || []).reduce((s, item) => {
+      const cantidad = Number(item.cantidad || 0);
+      const precio = Number(item.precioUnitario || 0);
+      return s + (cantidad * precio);
+    }, 0);
+
+    const esAfecto = DOCUMENTOS_AFECTOS_IVA.includes(formData.documentoVenta);
+    if (esAfecto) {
+      const subtotal = Math.round(totalConIva / 1.19);
+      const iva = totalConIva - subtotal;
+      return { subtotal, iva, total: totalConIva, esAfecto };
+    }
+
+    return { subtotal: totalConIva, iva: 0, total: totalConIva, esAfecto };
   };
 
   const registrarMovimientoEfectivo = async (movimiento) => {
@@ -245,9 +316,39 @@ function NuevaVenta({ onClose, onSave, initialData }) {
 
     // Sanitizar y asegurar números (evitar NaN)
     const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
-    const subtotalClean = round2(detalles.reduce((s, d) => s + (Number(d.total_linea) || 0), 0));
-    const ivaClean = round2(calcularIVA(subtotalClean));
-    const totalClean = round2(subtotalClean + ivaClean);
+    const { subtotal, iva, total } = calcularTotales();
+
+    const metodoPagoLiteral =
+      formData.metodoPago1 && formData.metodoPago1.tipo
+        ? (METODO_PAGO_ENUM_MAP[String(formData.metodoPago1.tipo)] || null)
+        : null;
+
+    // Validar que la suma del método de pago sea igual al total (solo uno o combinación de dos métodos)
+    const totalPagos = Number(formData.metodoPago1.monto || 0) + Number(formData.metodoPago2.monto || 0);
+    if (Math.round(totalPagos * 100) !== Math.round(total * 100)) {
+      alert('La suma de los métodos de pago debe ser igual al total de la venta');
+      return;
+    }
+
+    // Normalizar fecha_final a YYYY-MM-DD si existe
+    const normalizeFechaFinal = (val) => {
+      if (!val && val !== 0) return null;
+      const s = String(val).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; // ya ISO
+      const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+      if (m) return `${m[3]}-${m[2]}-${m[1]}`; // DD/MM/YYYY -> YYYY-MM-DD
+      const d = new Date(s);
+      if (!isNaN(d)) return d.toISOString().slice(0,10);
+      return null;
+    };
+
+    const fechaFinalNormalizada = normalizeFechaFinal(formData.fecha_final);
+    if (formData.metodoPago1.tipo === 'credito_deuda') {
+      if (!fechaFinalNormalizada) {
+        alert('Ingrese una fecha final válida para la deuda (formato YYYY-MM-DD)');
+        return;
+      }
+    }
 
     const ventaData = {
       fecha: (formData.fecha || '').toString().slice(0,10),
@@ -255,11 +356,37 @@ function NuevaVenta({ onClose, onSave, initialData }) {
       cliente_id: formData.cliente ? Number(formData.cliente) : null,
       documentoVenta: formData.documentoVenta || null,
       folioVenta: formData.folioVenta || null,
-      subtotal: subtotalClean,
-      iva: ivaClean,
-      total: totalClean,
-      // En el backend `metodos_pago` es una columna ENUM/string. Enviar solo el tipo (string) o null
-      metodos_pago: (formData.metodoPago1 && formData.metodoPago1.tipo) ? String(formData.metodoPago1.tipo) : null,
+      subtotal: subtotal,
+      iva: iva,
+      total: total,
+      // Enviar el literal esperado por el backend (compatibilidad: `metodo_pago`)
+      metodo_pago: metodoPagoLiteral,
+      // Detalle (legacy) de métodos de pago si aplica
+      metodos_pago_detalle: formData.metodosPagoDetalle || null,
+      // Enviar metodos_pago como arreglo para que el backend pueda generar movimientos bancarios automáticamente
+      metodos_pago: (function(){
+        const arr = [];
+        if (formData.metodoPago1 && formData.metodoPago1.tipo) arr.push({ tipo: formData.metodoPago1.tipo, monto: Number(formData.metodoPago1.monto || 0) });
+        if (formData.metodoPago2 && formData.metodoPago2.tipo) arr.push({ tipo: formData.metodoPago2.tipo, monto: Number(formData.metodoPago2.monto || 0) });
+        return arr.length ? arr : null;
+      })(),
+      // Si se seleccionó cuenta bancaria en el formulario y hay un método bancario, enviar cuenta_id
+      ...( (function(){
+        const bankTypes = ['transferencia','debito','credito','online','transbank'];
+        const hasBank = ((formData.metodoPago1 && bankTypes.includes(String(formData.metodoPago1.tipo))) || (formData.metodoPago2 && bankTypes.includes(String(formData.metodoPago2.tipo))));
+        if (!hasBank) return {};
+        // Priorizar cuenta seleccionada; si no existe buscar una asociada a la sucursal
+        let cuentaId = formData.cuenta_bancaria_id;
+        if (!cuentaId) {
+          const sucId = formData.sucursal;
+          if (sucId && cuentasBancarias && cuentasBancarias.length > 0) {
+            const match = cuentasBancarias.find(c => String(c.id_sucursal ?? c.cuenta_id_sucursal ?? c.sucursal_id ?? c.sucursal ?? c.idSucursal ?? '') === String(sucId));
+            if (match) cuentaId = match.id;
+          }
+        }
+        if (cuentaId) return { cuenta_id: Number(cuentaId) };
+        return {};
+      })()),
       observaciones: formData.observaciones || null,
       estado: 'REGISTRADA',
       detalles: detalles.map(d => ({
@@ -268,17 +395,15 @@ function NuevaVenta({ onClose, onSave, initialData }) {
         precio_unitario: Number(d.precio_unitario) || 0,
         total_linea: Number(d.total_linea) || 0,
       })),
+      // Incluir fecha_final sólo si el método es Crédito (Deuda)
+      ...(metodoPagoLiteral === 'Credito (Deuda)' ? { fecha_final: fechaFinalNormalizada } : {})
     };
 
+    // Si el método es bancario mostrar selector de cuenta en el formulario: insertar campo en el modal
+    // (se renderiza más abajo en renderCamposMetodoPago)
+    
     // debug: mostrar payload antes de enviar para detectar NaN/objetos inesperados
     console.debug('[NuevaVenta] ventaData ->', ventaData);
-
-    // Validar que la suma del método de pago sea igual al total (solo un método)
-    const totalPagos = Number(formData.metodoPago1.monto || 0);
-    if (Math.round(totalPagos * 100) !== Math.round(totalClean * 100)) {
-      alert('El monto del método de pago debe ser igual al total de la venta');
-      return;
-    }
 
     // Si hay pago en efectivo y está marcado para incluir en flujo de caja,
     // registrar el movimiento en efectivo
@@ -342,6 +467,22 @@ function NuevaVenta({ onClose, onSave, initialData }) {
             required
           />
         </div>
+
+        {/* Nota: el selector de cuenta bancaria se oculta en UI. La cuenta se selecciona automáticamente por sucursal si existe. */}
+
+        {/* Campo condicional fecha_final para Crédito (Deuda) */}
+        {metodoPago.tipo === 'credito_deuda' && (
+          <div className="col-md-4">
+            <label className="form-label">Fecha final (vencimiento)</label>
+            <input
+              type="date"
+              className="form-control"
+              value={formData.fecha_final || ''}
+              onChange={(e) => setFormData(prev => ({ ...prev, fecha_final: e.target.value }))}
+            />
+          </div>
+        )}
+
       </div>
     );
   };
@@ -494,7 +635,8 @@ function NuevaVenta({ onClose, onSave, initialData }) {
                       />
                     </div>
                     <div className="col-md-3">
-                      <label className="form-label">Precio Unitario</label>
+                      {/* Mostrar si el precio unitario se considera con o sin IVA según el documento */}
+                      <label className="form-label">{DOCUMENTOS_AFECTOS_IVA.includes(formData.documentoVenta) ? 'Precio Unitario (con IVA)' : 'Precio Unitario (sin IVA)'}</label>
                       <input
                         type="number"
                         className="form-control"
@@ -521,25 +663,6 @@ function NuevaVenta({ onClose, onSave, initialData }) {
               {/* Método de pago único */}
               {renderCamposMetodoPago()}
 
-              {/* Opción Incluir en Flujo de Caja */}
-              <div className="mb-3">
-                <div className="form-check">
-                  <input
-                    type="checkbox"
-                    className="form-check-input"
-                    id="incluirFlujoCaja"
-                    checked={formData.incluirFlujoCaja}
-                    onChange={(e) => setFormData({...formData, incluirFlujoCaja: e.target.checked})}
-                  />
-                  <label className="form-check-label" htmlFor="incluirFlujoCaja">
-                    Incluir en el Flujo de Caja
-                  </label>
-                </div>
-                <small className="text-muted d-block mt-1">
-                  Si no incluyes en el flujo de caja esta Venta quedará ingresada pero no se sumará en tus movimientos de Ingresos ni aparecerá en el flujo de caja de la empresa.
-                </small>
-              </div>
-
               <div className="mb-3">
                 <label className="form-label">Observaciones</label>
                 <textarea
@@ -555,13 +678,13 @@ function NuevaVenta({ onClose, onSave, initialData }) {
                   <div className="card bg-light">
                     <div className="card-body">
                       <div className="mb-2">
-                        <strong>Subtotal:</strong> ${calcularSubtotal().toLocaleString()}
+                        <strong>Subtotal:</strong> ${calcularTotales().subtotal.toLocaleString()}
                       </div>
                       <div className="mb-2">
-                        <strong>IVA (19%):</strong> ${calcularIVA(calcularSubtotal()).toLocaleString()}
+                        <strong>IVA (19%):</strong> ${calcularTotales().iva.toLocaleString()}
                       </div>
                       <div className="mb-2">
-                        <strong>Total:</strong> ${(calcularSubtotal() + calcularIVA(calcularSubtotal())).toLocaleString()}
+                        <strong>Total:</strong> ${calcularTotales().total.toLocaleString()}
                       </div>
                     </div>
                   </div>

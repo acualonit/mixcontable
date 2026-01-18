@@ -5,7 +5,7 @@ function NuevaCuenta({ onClose, onSave, sucursales = [] }) {
     banco: '',
     tipoCuenta: '',
     numeroCuenta: '',
-    sucursal: '',
+    id_sucursal: '',
     saldoInicial: 0,
     observaciones: ''
   });
@@ -71,23 +71,27 @@ function NuevaCuenta({ onClose, onSave, sucursales = [] }) {
                 <label className="form-label">Sucursal</label>
                 <select
                   className="form-select"
-                  value={formData.sucursal}
-                  onChange={(e) => setFormData({...formData, sucursal: e.target.value})}
+                  value={formData.id_sucursal}
+                  onChange={(e) => setFormData({...formData, id_sucursal: e.target.value})}
                   required
                 >
                   <option value="">Seleccionar sucursal</option>
                   {sucursales.length > 0 ? (
-                    sucursales.map(s => (
-                      <option key={s.id} value={s.id}>{s.nombre ?? s.name ?? s.nombre_sucursal ?? `Sucursal ${s.id}`}</option>
-                    ))
+                    sucursales.map(s => {
+                      // defensivo: soportar varias formas del objeto sucursal
+                      const id = s?.id ?? s?.id_sucursal ?? s?.value ?? s?.key ?? (s?.original && (s.original.id ?? s.original.ID)) ?? String(s);
+                      const nombre = s?.nombre ?? s?.name ?? s?.sucursal_nombre ?? s?.nombre_sucursal ?? s?.label ?? (s?.original && (s.original.nombre || s.original.name || s.original.sucursal_nombre)) ?? String(s);
+                      return (
+                        <option key={id} value={id}>{nombre}</option>
+                      );
+                    })
                   ) : (
-                    <>
-                      <option value="central">Sucursal Central</option>
-                      <option value="norte">Sucursal Norte</option>
-                      <option value="sur">Sucursal Sur</option>
-                    </>
+                    // No mostrar sucursales por defecto; indicar que no hay sucursales cargadas
+                    <option value="">No hay sucursales cargadas</option>
                   )}
                 </select>
+                {/* Depuración: mostrar en consola las sucursales recibidas */}
+                {process.env.NODE_ENV !== 'production' && console.debug && console.debug('NuevaCuenta sucursales prop:', sucursales)}
               </div>
 
               <div className="mb-3">
@@ -96,7 +100,7 @@ function NuevaCuenta({ onClose, onSave, sucursales = [] }) {
                   type="number"
                   className="form-control"
                   value={formData.saldoInicial}
-                  onChange={(e) => setFormData({...formData, saldoInicial: parseFloat(e.target.value)})}
+                  onChange={(e) => setFormData({...formData, saldoInicial: parseFloat(e.target.value || 0)})}
                   required
                 />
               </div>

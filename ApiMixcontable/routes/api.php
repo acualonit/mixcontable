@@ -10,6 +10,8 @@ use App\Http\Controllers\RespaldosController;
 use App\Http\Controllers\SucursalController;
 use App\Http\Controllers\UserManagementController;
 use App\Http\Controllers\EfectivoController;
+use App\Http\Controllers\ComprasController;
+use App\Http\Controllers\CajaEfectivoController;
 use App\Models\User;
 
 /*
@@ -81,6 +83,10 @@ Route::middleware('session')->group(function () {
         Route::put('/sucursales/{sucursal}', [SucursalController::class, 'update']);
         Route::delete('/sucursales/{sucursal}', [SucursalController::class, 'destroy']);
 
+        // Rutas para obtener todas las sucursales (usadas por el frontend)
+        Route::get('/sucursales', [SucursalController::class, 'all']);
+        Route::get('/sucursales/public', [SucursalController::class, 'all']);
+
         // Usuarios
         Route::get('/usuarios', [UserManagementController::class, 'index']);
         Route::post('/usuarios', [UserManagementController::class, 'store']);
@@ -105,13 +111,17 @@ Route::middleware('session')->group(function () {
 
         // Ventas
         Route::get('/ventas', [\App\Http\Controllers\VentasController::class, 'index']);
+        Route::get('/ventas/export', [\App\Http\Controllers\VentasController::class, 'export']);
+        Route::get('/ventas/eliminadas', [\App\Http\Controllers\VentasController::class, 'eliminadas']);
         Route::get('/ventas/{venta}', [\App\Http\Controllers\VentasController::class, 'show']);
         Route::post('/ventas', [\App\Http\Controllers\VentasController::class, 'store']);
         Route::put('/ventas/{venta}', [\App\Http\Controllers\VentasController::class, 'update']);
         Route::delete('/ventas/{venta}', [\App\Http\Controllers\VentasController::class, 'destroy']);
-        Route::get('/ventas/export', [\App\Http\Controllers\VentasController::class, 'export']);
         // Ruta de ayuda para debug de métodos de pago (solo local/debug)
         Route::get('/ventas/metodos/debug', [\App\Http\Controllers\VentasController::class, 'debugMetodos']);
+
+        // Cuentas por Cobrar - pagos
+        Route::post('/cuentas-cobrar/pagos', [\App\Http\Controllers\CuentasCobrarController::class, 'storePago']);
 
         // Efectivo
         Route::get('/efectivo/saldo', [EfectivoController::class, 'saldo']);
@@ -121,11 +131,32 @@ Route::middleware('session')->group(function () {
         Route::put('/efectivo/{id}', [EfectivoController::class, 'update']);
         Route::delete('/efectivo/{id}', [EfectivoController::class, 'destroy']);
 
+        // Compras (Insumos)
+        Route::get('/compras', [ComprasController::class, 'index']);
+        Route::get('/compras/eliminadas', [ComprasController::class, 'eliminadas']);
+        Route::get('/compras/{compra}', [ComprasController::class, 'show']);
+        Route::post('/compras', [ComprasController::class, 'store']);
+        Route::put('/compras/{compra}', [ComprasController::class, 'update']);
+        Route::delete('/compras/{compra}', [ComprasController::class, 'destroy']);
+
         // Respaldos
         Route::get('/respaldos', [RespaldosController::class, 'index']);
         Route::post('/respaldos', [RespaldosController::class, 'store']);
         Route::post('/respaldos/restaurar', [RespaldosController::class, 'restore']);
         Route::get('/respaldos/{respaldo}/descargar', [RespaldosController::class, 'download']);
         Route::delete('/respaldos/{respaldo}', [RespaldosController::class, 'destroy']);
+
+        // Caja Efectivo
+        Route::post('/caja-efectivo/sync-saldo', [CajaEfectivoController::class, 'syncSaldo']);
+
+        // Banco (cuentas y movimientos)
+        Route::get('/banco/cuentas', [\App\Http\Controllers\BancoController::class, 'cuentas']);
+        Route::post('/banco/cuentas', [\App\Http\Controllers\BancoController::class, 'storeCuenta']);
+        Route::get('/banco/saldo', [\App\Http\Controllers\BancoController::class, 'saldo']);
+        Route::get('/banco/movimientos', [\App\Http\Controllers\BancoController::class, 'movimientos']);
+        Route::get('/banco/movimientos/eliminados', [\App\Http\Controllers\BancoController::class, 'eliminados']);
+        Route::post('/banco/movimientos', [\App\Http\Controllers\BancoController::class, 'storeMovimiento']);
+        Route::put('/banco/movimientos/{id}', [\App\Http\Controllers\BancoController::class, 'updateMovimiento']);
+        Route::delete('/banco/movimientos/{id}', [\App\Http\Controllers\BancoController::class, 'deleteMovimiento']);
     });
 });

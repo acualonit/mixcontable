@@ -42,6 +42,11 @@ export const listVentas = async (params = {}) => {
   throw new Error('No se pudo obtener la lista de ventas (rutas probadas fallaron).');
 };
 
+export const listVentasEliminadas = async (params = {}) => {
+  const query = new URLSearchParams(params).toString();
+  return fetchJson(`/ventas/eliminadas${query ? `?${query}` : ''}`);
+};
+
 export const getVenta = (id) => fetchJson(`/ventas/${id}`);
 
 export const createVenta = (payload) => fetchJson('/ventas', { method: 'POST', body: payload });
@@ -56,11 +61,18 @@ export const exportVentas = async (params = {}) => {
 
   const resp = await fetch(url, { credentials: 'include' });
   if (!resp.ok) throw new Error('Error al exportar ventas');
+
   const blob = await resp.blob();
+
+  // Intentar respetar filename del header Content-Disposition
+  const cd = resp.headers.get('content-disposition') || '';
+  const match = cd.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+  const filename = decodeURIComponent(match?.[1] || match?.[2] || `ventas_export_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}`);
+
   const link = document.createElement('a');
   const urlBlob = window.URL.createObjectURL(blob);
   link.href = urlBlob;
-  link.download = `ventas_export_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`;
+  link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -74,4 +86,5 @@ export default {
   updateVenta,
   deleteVenta,
   exportVentas,
+  listVentasEliminadas,
 };

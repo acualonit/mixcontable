@@ -3,8 +3,10 @@ import NuevaCuenta from '../components/banco/NuevaCuenta';
 import NuevoMovimiento from '../components/banco/NuevoMovimiento';
 import DetalleCuenta from '../components/banco/DetalleCuenta';
 import DetalleMovimiento from '../components/banco/DetalleMovimiento';
-import { fetchCuentas, fetchMovimientosBanco, createMovimientoBanco, fetchSaldoBanco, createCuenta, fetchSucursales, deleteMovimientoBanco, updateMovimientoBanco } from '../utils/bancoApi';
+import { fetchCuentas, fetchMovimientosBanco, createMovimientoBanco, fetchSaldoBanco, createCuenta, deleteMovimientoBanco, updateMovimientoBanco } from '../utils/bancoApi';
 import { exportToExcel, prepareDataForExport, formatDateForExcel } from '../utils/exportUtils';
+import { fetchEmpresas, fetchSucursales as fetchSucursalesByEmpresa, fetchPublicSucursales, fetchUsuarios } from '../utils/configApi';
+import { fetchSucursales as fetchSucursalesGeneric } from '../utils/bancoApi';
 
 function Banco() {
   const [cuentaSeleccionada, setCuentaSeleccionada] = useState('');
@@ -24,15 +26,59 @@ function Banco() {
   const [editMovimiento, setEditMovimiento] = useState(null);
   const [saldoActual, setSaldoActual] = useState(0);
   const [sucursales, setSucursales] = useState([]);
+  const [usersMap, setUsersMap] = useState({});
+
+  // Cargar usuarios y construir mapa id -> nombre (coalesce de campos comunes)
+  useEffect(() => {
+    let mounted = true;
+    const loadUsers = async () => {
+      try {
+        const res = await fetchUsuarios().catch(() => null);
+        const list = res?.data ?? (Array.isArray(res) ? res : []);
+        const map = {};
+        (list || []).forEach(u => {
+          const id = String(u.id ?? u.user_id ?? u.id_usuario ?? '');
+          const nombre = u.nombre ?? u.name ?? u.nombre_completo ?? u.usuario_nombre ?? u.email ?? '';
+          if (id) map[id] = nombre || String(u.id);
+        });
+        if (mounted) setUsersMap(map);
+      } catch (e) {
+        // ignore
+      }
+    };
+    loadUsers();
+    return () => { mounted = false; };
+  }, []);
 
   const getCuentaDisplay = (cuenta) => {
     if (!cuenta) return '';
+    const sucursalNombre = cuenta.sucursal_nombre ?? cuenta.sucursalNombre ?? cuenta.cuenta_sucursal_nombre ?? null;
+    let sucDisplay = sucursalNombre;
+    try {
+      if (!sucDisplay) {
+        const sucId = cuenta.id_sucursal ?? cuenta.sucursal_id ?? cuenta.sucursal ?? null;
+        if (sucId != null) {
+          const found = (sucursales || []).find(s => String(s.id) === String(sucId));
+          sucDisplay = found?.nombre ?? found?.name ?? null;
+        }
+      }
+    } catch (e) {
+      sucDisplay = sucDisplay || null;
+    }
+
     const banco = cuenta.banco ?? cuenta.nombre ?? cuenta.name ?? '';
     const numero = cuenta.numero_cuenta ?? cuenta.numeroCuenta ?? cuenta.numero ?? cuenta.account_number ?? cuenta.numeroCuentaString ?? '';
-    if (banco && numero) return `${banco} - ${numero}`;
-    if (numero) return numero;
-    if (banco) return banco;
-    return String(cuenta.id ?? '');
+    const base = banco && numero ? `${banco} - ${numero}` : (numero ? String(numero) : (banco ? String(banco) : String(cuenta.id ?? '')));
+    return sucDisplay ? `${sucDisplay} - ${base}` : base;
+  };
+
+  const normalizeSucursales = (rawList) => {
+    const list = Array.isArray(rawList) ? rawList : (rawList?.data && Array.isArray(rawList.data) ? rawList.data : (rawList?.sucursales && Array.isArray(rawList.sucursales) ? rawList.sucursales : []));
+    return (list || []).map((s) => {
+      const id = s?.id ?? s?.id_sucursal ?? s?.value ?? s?.key ?? (s?.original && (s.original.id ?? s.original.ID)) ?? String(s);
+      const nombre = s?.nombre ?? s?.name ?? s?.sucursal_nombre ?? s?.nombre_sucursal ?? s?.label ?? (s?.original && (s.original.nombre || s.original.name || s.original.sucursal_nombre)) ?? String(s);
+      return { id, nombre, original: s };
+    }).filter(x => x.id != null);
   };
 
   useEffect(() => {
@@ -43,15 +89,48 @@ function Banco() {
         setCuentas(c);
         // por defecto mostrar "Todas las cuentas" (valor vacío)
         setCuentaSeleccionada((prev) => (prev === '' || prev == null ? '' : prev));
-        // cargar sucursales
-        try {
-          const sres = await fetchSucursales();
-          setSucursales(sres || sres?.data || []);
-        } catch (se) {
-          console.warn('No se pudieron cargar sucursales', se);
-        }
       } catch (err) {
         console.error('Error cargando cuentas:', err);
+        return;
+      }
+
+      // cargar sucursales: intentar por empresa, si no usar endpoint público
+      try {
+        let rawList = [];
+        try {
+          const empresasResp = await fetchEmpresas().catch(() => []);
+          const empresa = Array.isArray(empresasResp) ? empresasResp[0] : (empresasResp?.data ? empresasResp.data[0] : null);
+          if (empresa && empresa.id) {
+            const sucResp = await fetchSucursalesByEmpresa(empresa.id).catch(() => []);
+            rawList = sucResp;
+          } else {
+            const sucResp = await fetchPublicSucursales().catch(() => []);
+            rawList = sucResp;
+          }
+        } catch (innerErr) {
+          rawList = [];
+        }
+
+        // Si la respuesta anterior no entregó datos, intentar el endpoint genérico del módulo banco
+        if ((!rawList || (Array.isArray(rawList) && rawList.length === 0) || (rawList?.data && Array.isArray(rawList.data) && rawList.data.length === 0))) {
+          try {
+            const fallback = await fetchSucursalesGeneric().catch(() => []);
+            rawList = fallback;
+          } catch (ferr) {
+            rawList = rawList || [];
+          }
+        }
+
+        // Depuración: si no hay sucursales mostrar la respuesta cruda en consola (solo dev)
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('[Banco] raw sucursales response:', rawList);
+        }
+
+        const normalized = normalizeSucursales(rawList);
+        setSucursales(normalized);
+      } catch (se) {
+        console.warn('No se pudieron cargar sucursales', se);
+        setSucursales([]);
       }
     };
     load();
@@ -61,7 +140,33 @@ function Banco() {
     const loadMov = async () => {
       try {
         const mv = await fetchMovimientosBanco(cuentaSeleccionada);
-        setMovimientos(mv?.data || []);
+        const movimientosApi = mv?.data || [];
+
+        // Detectar si un movimiento proviene de ventas/u otros módulos (para deshabilitar edición/eliminación)
+        const mergedWithFlags = (movimientosApi || []).map(m => {
+          try {
+            const obs = String(m.observaciones ?? m.observacion ?? m.origen ?? '').toLowerCase();
+            const ref = String(m.referencia ?? m.partida ?? m.reference ?? '').toLowerCase();
+            const desc = String(m.descripcion ?? m.detalle ?? m.concepto ?? '').toLowerCase();
+
+            const fromVentaReal = Boolean(
+              obs.includes('origen:venta') || obs.includes('origen: venta') || obs.includes('venta_id:') ||
+              obs.includes('venta:') ||
+              ref.startsWith('venta-') || ref.startsWith('venta:') ||
+              desc.trim().startsWith('venta ') ||
+              String(m.origen ?? '').toLowerCase().includes('venta') ||
+              // movimientos creados por el módulo CxC suelen contener esta frase en la descripción
+              desc.includes('cobro cuenta por cobrar')
+            );
+
+            // marca sintética (representación, no un movimiento persistente) — dejar falso por defecto
+            const synthetic = Boolean(desc.includes('venta resumen') || desc.includes('ventas con metodos bancarios'));
+
+            return { ...m, __fromVentaReal: fromVentaReal, __syntheticFromVenta: synthetic };
+          } catch (e) { return { ...m, __fromVentaReal: false, __syntheticFromVenta: false }; }
+        });
+
+        setMovimientos(mergedWithFlags);
         const s = await fetchSaldoBanco(cuentaSeleccionada);
         setSaldoActual(s?.saldo ?? 0);
       } catch (err) {
@@ -69,7 +174,7 @@ function Banco() {
       }
     };
     loadMov();
-  }, [cuentaSeleccionada]);
+  }, [cuentaSeleccionada, cuentas, sucursales]);
 
   // calcular saldos por fila: partiendo del saldoActual y restando/agregando cada movimiento (lista ordenada desc)
   const enrichedMovimientos = React.useMemo(() => {
@@ -80,11 +185,57 @@ function Banco() {
       const isIngreso = tipoLower.includes('cred') || tipoLower.includes('ingreso');
       const valor = Number(m.monto ?? m.valor ?? m.amount ?? 0);
       const rowSaldo = running;
-      // después de mostrar este movimiento, actualizar running hacia movimientos siguientes (más antiguos)
       running = isIngreso ? running - valor : running + valor;
-      return { ...m, __valor: valor, __isIngreso: isIngreso, __rowSaldo: rowSaldo };
+
+      // Resolver cuenta: buscar por distintos campos y fallback a info embebida
+      const cuentaIdCandidate = m.cuenta_id ?? m.cuenta ?? m.account_id ?? m.cuentaId ?? (m.cuenta && m.cuenta.id) ?? m.cuenta_bancaria_id ?? m.cuenta_bancaria;
+      let cuentaDisplay = '';
+      try {
+        if (m.cuenta_banco && (m.cuenta_numero || m.cuenta_numero === 0)) {
+          const suc = m.cuenta_sucursal_nombre ?? '';
+          const base = `${m.cuenta_banco} - ${m.cuenta_numero}`;
+          cuentaDisplay = suc ? `${suc} - ${base}` : base;
+        } else if (cuentaIdCandidate != null) {
+          const found = cuentas.find(c => String(c.id) === String(cuentaIdCandidate));
+          if (found) cuentaDisplay = getCuentaDisplay(found);
+          else if (m.cuenta && typeof m.cuenta === 'object') cuentaDisplay = getCuentaDisplay(m.cuenta);
+          else if (m.cuenta_bancaria) cuentaDisplay = String(m.cuenta_bancaria);
+        } else if (m.cuenta && typeof m.cuenta === 'object') {
+          cuentaDisplay = getCuentaDisplay(m.cuenta);
+        } else if (m.cuenta_bancaria) {
+          cuentaDisplay = String(m.cuenta_bancaria);
+        }
+      } catch (e) {
+        cuentaDisplay = '';
+      }
+
+      // Resolver sucursal: buscar nombre directo o resolver id contra sucursales
+      const sucursalCandidate = m.cuenta_sucursal_nombre ?? m.sucursal ?? m.cuenta_sucursal ?? m.sucursal_id ?? m.id_sucursal ?? (m.sucursal && m.sucursal.id) ?? null;
+      let sucursalDisplay = '';
+      try {
+        if (typeof sucursalCandidate === 'string' && sucursalCandidate.trim() !== '') {
+          sucursalDisplay = sucursalCandidate;
+        } else if (sucursalCandidate != null) {
+          const foundS = sucursales.find(s => String(s.id) === String(sucursalCandidate));
+          if (foundS) sucursalDisplay = foundS.nombre ?? foundS.name ?? String(foundS.id);
+          else if (m.cuenta_sucursal_nombre) sucursalDisplay = m.cuenta_sucursal_nombre;
+        } else if (m.cuenta_sucursal_nombre) {
+          sucursalDisplay = m.cuenta_sucursal_nombre;
+        }
+      } catch (e) {
+        sucursalDisplay = '';
+      }
+
+      // Resolver nombre de usuario: preferir `usuario_nombre` que pueda venir del API,
+      // si no existe, intentar mapear `user_id` con `usersMap`, si tampoco existe, usar el id.
+      const apiUserName = m.usuario_nombre ?? m.usuario_nombre_completo ?? m.user_name ?? null;
+      const userId = m.user_id ?? m.usuario ?? m.user ?? m.userId ?? null;
+      const usuarioNombreFromMap = userId != null ? (usersMap[String(userId)] ?? '') : '';
+      const usuarioNombre = apiUserName || usuarioNombreFromMap || (userId != null ? String(userId) : '');
+
+      return { ...m, __valor: valor, __isIngreso: isIngreso, __rowSaldo: rowSaldo, __cuentaDisplay: cuentaDisplay, __sucursalDisplay: sucursalDisplay, usuario_nombre: usuarioNombre };
     });
-  }, [movimientos, saldoActual]);
+  }, [movimientos, saldoActual, cuentas, sucursales, usersMap]);
 
   // aplicar filtros cliente sobre enrichedMovimientos
   const filteredMovimientos = React.useMemo(() => {
@@ -127,8 +278,8 @@ function Banco() {
     // Preparar filas en el mismo orden de columnas que se muestran en la UI
     try {
       const rows = (filteredMovimientos || []).map(r => {
-        const cuenta = r.cuenta_banco ? `${r.cuenta_banco} - ${r.cuenta_numero}` : (r.cuenta_bancaria ?? r.cuentaBancaria ?? '');
-        const sucursal = r.cuenta_sucursal_nombre ?? r.sucursal ?? '';
+        const cuenta = r.__cuentaDisplay ?? (r.cuenta_banco ? `${r.cuenta_banco} - ${r.cuenta_numero}` : (r.cuenta_bancaria ?? r.cuentaBancaria ?? ''));
+        const sucursal = r.__sucursalDisplay ?? (r.cuenta_sucursal_nombre ?? r.sucursal ?? '');
         return {
           Fecha: formatDateForExcel(r.fecha ?? r.date ?? ''),
           Categoria: r.categoria ?? r.descripcion ?? '',
@@ -296,8 +447,8 @@ function Banco() {
                   const valor = movimiento.__valor ?? Number(movimiento.monto ?? movimiento.valor ?? movimiento.amount ?? 0);
                   const saldo = movimiento.__rowSaldo ?? 0;
                   const isIngreso = movimiento.__isIngreso;
-                  const cuentaNombre = movimiento.cuenta_banco ? `${movimiento.cuenta_banco} - ${movimiento.cuenta_numero}` : (movimiento.cuenta_bancaria ?? movimiento.cuentaBancaria ?? '');
-                  const sucursal = movimiento.cuenta_sucursal_nombre ?? movimiento.sucursal ?? movimiento.cuenta_sucursal ?? '';
+                  const cuentaNombre = movimiento.__cuentaDisplay ?? (movimiento.cuenta_banco ? `${movimiento.cuenta_banco} - ${movimiento.cuenta_numero}` : (movimiento.cuenta_bancaria ?? movimiento.cuentaBancaria ?? ''));
+                  const sucursal = movimiento.__sucursalDisplay ?? (movimiento.cuenta_sucursal_nombre ?? movimiento.sucursal ?? movimiento.cuenta_sucursal ?? '');
                   return (
                     <tr key={movimiento.id}>
                       <td>{movimiento.fecha}</td>
@@ -321,30 +472,66 @@ function Banco() {
                         >
                           <i className="bi bi-eye"></i>
                         </button>
-                        <button
-                          className="btn btn-sm btn-warning"
-                          onClick={() => { setEditMovimiento(movimiento); setShowNuevoMovimiento(true); }}
-                        >
-                          <i className="bi bi-pencil"></i>
-                        </button>
-                        <button
-                          className="btn btn-sm btn-danger"
-                          onClick={async () => {
-                            if (!confirm('Confirma eliminar este movimiento?')) return;
-                            try {
-                              await deleteMovimientoBanco(movimiento.id);
-                              // refrescar lista y saldo
-                              const mv = await fetchMovimientosBanco(cuentaSeleccionada);
-                              setMovimientos(mv?.data || []);
-                              const s = await fetchSaldoBanco(cuentaSeleccionada);
-                              setSaldoActual(s?.saldo ?? 0);
-                            } catch (err) {
-                              console.error('Error eliminando movimiento:', err);
-                            }
-                          }}
-                        >
-                          <i className="bi bi-trash"></i>
-                        </button>
+                        {/* Si el movimiento proviene de una venta (sintético), no permitir editar/eliminar directo.
+                            Mostrar botón 'Conciliar' que prefill el modal para crear un movimiento real. */}
+                        {movimiento.__syntheticFromVenta ? (
+                          <>
+                            <button
+                              className="btn btn-sm btn-info"
+                              onClick={() => {
+                                // Prellenar datos para crear un movimiento bancario a partir de la venta
+                                const v = movimiento.venta_original ?? {};
+                                const referencia = movimiento.referencia ?? movimiento.partida ?? v.folioVenta ?? v.folio_venta ?? v.folio ?? v.id ?? '';
+                                const inicial = {
+                                  fecha: movimiento.fecha ?? v.fecha ?? v.created_at,
+                                  descripcion: movimiento.descripcion ?? `Venta ${referencia} - ${v.cliente?.nombre ?? v.cliente ?? ''}`,
+                                  tipo: 'INGRESO',
+                                  monto: movimiento.monto ?? movimiento.amount ?? Number(v.total ?? v.monto ?? 0),
+                                  categoria: movimiento.categoria ?? (v.metodo_pago ?? v.metodoPago ?? v.forma_pago ?? 'Transferencia'),
+                                  referencia: referencia,
+                                  cuenta: cuentaSeleccionada || undefined,
+                                  sucursal: v.sucursal_nombre ?? v.sucursal ?? v.id_sucursal ?? v.sucursal_id ?? undefined,
+                                  observaciones: v.observaciones ?? v.observacion ?? ''
+                                };
+                                setEditMovimiento(inicial);
+                                setShowNuevoMovimiento(true);
+                              }}
+                            >
+                              Conciliar
+                            </button>
+                          </>
+                        ) : movimiento.__fromVentaReal ? (
+                          // Movimiento REAL ya generado por venta -> no editable ni eliminable desde aquí
+                          <>
+                            <button className="btn btn-sm btn-secondary" title="Movimiento generado automáticamente por una venta; edición deshabilitada">
+                              <i className="bi bi-lock-fill"></i>
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              className="btn btn-sm btn-warning"
+                              onClick={() => { setEditMovimiento(movimiento); setShowNuevoMovimiento(true); }}
+                            >
+                              <i className="bi bi-pencil"></i>
+                            </button>
+                            <button
+                              className="btn btn-sm btn-danger"
+                              onClick={async () => {
+                                if (!confirm('Confirma eliminar este movimiento?')) return;
+                                try {
+                                  await deleteMovimientoBanco(movimiento.id);
+                                  // recargar la página completa para asegurar estado consistente
+                                  window.location.reload();
+                                } catch (err) {
+                                  console.error('Error eliminando movimiento:', err);
+                                }
+                              }}
+                            >
+                              <i className="bi bi-trash"></i>
+                            </button>
+                          </>
+                        )}
                       </td>
                     </tr>
                   );
@@ -365,7 +552,7 @@ function Banco() {
                 banco: data.banco,
                 tipo_cuenta: data.tipoCuenta,
                 numero_cuenta: data.numeroCuenta,
-                id_sucursal: Number(data.sucursal),
+                id_sucursal: Number(data.sucursal) || null,
                 saldo_inicial: data.saldoInicial,
                 observaciones: data.observaciones
               };
@@ -386,6 +573,7 @@ function Banco() {
       {showNuevoMovimiento && (
         <NuevoMovimiento 
           cuentas={cuentas}
+          sucursales={sucursales}
           initialData={editMovimiento}
           onClose={() => { setShowNuevoMovimiento(false); setEditMovimiento(null); }}
           onSave={async (data) => {
@@ -398,7 +586,8 @@ function Banco() {
                 categoria: data.categoria,
                 cuenta_id: Number(data.cuenta || cuentaSeleccionada || (cuentas[0]?.id)),
                 referencia: data.referencia,
-                sucursal: data.sucursal,
+                // preferir enviar id de sucursal si existe, si no enviar nombre
+                sucursal: data.sucursal ?? data.sucursal_id ?? data.sucursal_nombre,
                 observaciones: data.observaciones
               };
               if (editMovimiento && editMovimiento.id) {

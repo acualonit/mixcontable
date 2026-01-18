@@ -27,6 +27,7 @@ class Venta extends Model
 		'metodos_pago_detalle',
 		'observaciones',
 		'estado',
+		'fecha_final', // agregado para permitir guardar fecha de vencimiento en ventas
 	];
 
 	protected $casts = [
@@ -34,6 +35,7 @@ class Venta extends Model
 		'subtotal' => 'decimal:2',
 		'iva' => 'decimal:2',
 		'total' => 'decimal:2',
+		'fecha_final' => 'datetime', // castear fecha_final
 		// `metodos_pago` en la tabla es un ENUM con literales; no castear a array
 		// para evitar que Laravel JSON-encode valores que no coincidan con el ENUM.
 	];
@@ -71,7 +73,30 @@ class Venta extends Model
 
 	public function metodosPago()
 	{
-		return $this->hasOne(VentaMetodoPago::class, 'venta_id');
+		// Si existe la tabla `venta_metodos_pago` se podría retornar una relación.
+		// Para evitar consultas a una tabla que puede no existir en entornos
+		// sin migraciones, devolvemos null aquí y proporcionamos el accesor
+		// `metodos_pago_detalle` que lee los detalles desde archivos en storage.
+		return null;
+	}
+
+	/**
+	 * Accesor para obtener los métodos de pago detallados (sin usar tabla DB).
+	 * Lee el archivo storage/app/venta_metodos_pago/{venta_id}.json si existe.
+	 */
+	public function getMetodosPagoDetalleAttribute()
+	{
+		try {
+			$file = storage_path('app/venta_metodos_pago') . DIRECTORY_SEPARATOR . ($this->id ?? 'unknown') . '.json';
+			if (file_exists($file)) {
+				$content = file_get_contents($file);
+				$json = json_decode($content, true);
+				return $json;
+			}
+		} catch (\Exception $e) {
+			// No romper la aplicación si algo falla al leer el archivo
+		}
+		return null;
 	}
 }
 

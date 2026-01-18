@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import NuevaVenta from '../components/ventas/NuevaVenta';
 import DetalleVenta from '../components/ventas/DetalleVenta';
 import VentasDiarias from '../components/ventas/VentasDiarias';
@@ -19,6 +19,7 @@ function Ventas() {
   const [showVentasEliminadas, setShowVentasEliminadas] = useState(false);
   const [showVentaMasiva, setShowVentaMasiva] = useState(false);
   const [fechaSeleccionada, setFechaSeleccionada] = useState(null);
+  const [sucursalSeleccionada, setSucursalSeleccionada] = useState(null);
   const [ventaSeleccionada, setVentaSeleccionada] = useState(null);
 
   const handleNuevaVenta = () => {
@@ -56,8 +57,9 @@ function Ventas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleVerDia = (fecha) => {
+  const handleVerDia = (fecha, sucursal) => {
     setFechaSeleccionada(fecha);
+    setSucursalSeleccionada(sucursal ?? null);
     setShowVentasDiarias(true);
   };
 
@@ -75,8 +77,17 @@ function Ventas() {
         handleBuscar();
       })
       .catch(err => {
-        console.error(err);
-        alert(err.message || 'Error al guardar la venta');
+        console.error('Error creando venta:', err);
+        // Mostrar errores de validación si API los devuelve en err.body.errors
+        const body = err && err.body ? err.body : null;
+        if (body && body.errors) {
+          const messages = Object.entries(body.errors).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n');
+          alert('Errores de validación:\n' + messages);
+        } else if (body && body.message) {
+          alert(body.message);
+        } else {
+          alert(err.message || 'Error al guardar la venta');
+        }
       });
   };
 
@@ -152,7 +163,78 @@ function Ventas() {
     }
   };
 
-  const totals = React.useMemo(() => {
+  const normalizeMetodoPago = (mpRaw) => {
+    const mp = (mpRaw || '').toString().trim();
+    switch (mp) {
+      case 'Efectivo':
+        return 'efectivo';
+      case 'Transferencia':
+        return 'transferencia';
+      case 'Tarjeta Debito':
+      case 'Tarejeta Debito':
+      case 'Tarjeta Débito':
+        return 'tDebito';
+      case 'Tarjeta Credito':
+      case 'Tarjeta Crédito':
+        return 'tCredito';
+      case 'Cheque':
+        return 'cheque';
+      case 'Pago Online':
+        return 'online';
+      case 'Credito (Deuda)':
+      case 'Crédito (Deuda)':
+        return 'creditoDeuda';
+      default:
+        return 'otros';
+    }
+  };
+
+  const groupedVentas = useMemo(() => {
+    // clave: YYYY-MM-DD|sucursal
+    const map = new Map();
+
+    for (const v of ventasList) {
+      const fechaKey = String(v.fecha || '').slice(0, 10);
+      const sucKey = String(v.sucursal_nombre ?? v.sucursal ?? '').trim();
+      const key = `${fechaKey}|${sucKey}`;
+
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          fecha: fechaKey,
+          sucursal: sucKey,
+          sucursal_id: v.sucursal_id ?? null,
+          efectivo: 0,
+          transferencia: 0,
+          tDebito: 0,
+          tCredito: 0,
+          cheque: 0,
+          online: 0,
+          creditoDeuda: 0,
+          otros: 0,
+          totalVentaDia: 0,
+          deudaDia: 0,
+        });
+      }
+
+      const row = map.get(key);
+      const amt = Number(v.total) || 0;
+      const bucket = normalizeMetodoPago(v.metodos_pago);
+
+      row[bucket] += amt;
+      row.totalVentaDia += amt;
+      if (bucket === 'creditoDeuda') row.deudaDia += amt;
+    }
+
+    return Array.from(map.values())
+      .sort((a, b) => {
+        // fecha desc, sucursal asc
+        if (a.fecha !== b.fecha) return a.fecha < b.fecha ? 1 : -1;
+        return a.sucursal.localeCompare(b.sucursal);
+      });
+  }, [ventasList]);
+
+  const totals = useMemo(() => {
     const t = {
       efectivo: 0,
       transferencia: 0,
@@ -165,37 +247,28 @@ function Ventas() {
       totalVenta: 0,
       deuda: 0,
     };
-    ventasList.forEach(v => {
-      const amt = Number(v.total) || 0;
-      const mp = v.metodos_pago || (typeof v.metodos_pago === 'string' ? v.metodos_pago : null);
-      switch ((mp || '').toString()) {
-        case 'Efectivo':
-          t.efectivo += amt; break;
-        case 'Transferencia':
-          t.transferencia += amt; break;
-        case 'Tarejeta Debito':
-        case 'Tarjeta Debito':
-          t.tDebito += amt; break;
-        case 'Tarjeta Credito':
-          t.tCredito += amt; break;
-        case 'Cheque':
-          t.cheque += amt; break;
-        case 'Pago Online':
-          t.online += amt; break;
-        case 'Credito (Deuda)':
-          t.creditoDeuda += amt; t.deuda += amt; break;
-        default:
-          t.otros += amt; break;
-      }
-      t.totalVenta += amt;
+
+    groupedVentas.forEach(r => {
+      t.efectivo += r.efectivo;
+      t.transferencia += r.transferencia;
+      t.tDebito += r.tDebito;
+      t.tCredito += r.tCredito;
+      t.cheque += r.cheque;
+      t.online += r.online;
+      t.creditoDeuda += r.creditoDeuda;
+      t.otros += r.otros;
+      t.totalVenta += r.totalVentaDia;
+      t.deuda += r.deudaDia;
     });
+
     return t;
-  }, [ventasList]);
+  }, [groupedVentas]);
 
   if (showVentasDiarias) {
     return (
       <VentasDiarias 
         fecha={fechaSeleccionada}
+        sucursal={sucursalSeleccionada}
         onBack={() => setShowVentasDiarias(false)}
       />
     );
@@ -327,28 +400,28 @@ function Ventas() {
                 </tr>
               </thead>
               <tbody>
-                {ventasList.length === 0 && (
+                {groupedVentas.length === 0 && (
                   <tr>
                     <td colSpan="12" className="text-center">No hay ventas para los filtros seleccionados</td>
                   </tr>
                 )}
-                {ventasList.map((v) => (
-                  <tr key={v.id}>
-                    <td>{formatDate(v.fecha)}</td>
-                    <td>{v.sucursal_nombre ?? v.sucursal}</td>
-                    <td>{v.metodos_pago === 'Efectivo' ? `$${Number(v.total).toLocaleString()}` : '-'}</td>
-                    <td>{v.metodos_pago === 'Transferencia' ? `$${Number(v.total).toLocaleString()}` : '-'}</td>
-                    <td>{(v.metodos_pago === 'Tarejeta Debito' || v.metodos_pago === 'Tarjeta Debito') ? `$${Number(v.total).toLocaleString()}` : '-'}</td>
-                    <td>{v.metodos_pago === 'Tarjeta Credito' ? `$${Number(v.total).toLocaleString()}` : '-'}</td>
-                    <td>{v.metodos_pago === 'Cheque' ? `$${Number(v.total).toLocaleString()}` : '-'}</td>
-                    <td>{v.metodos_pago === 'Pago Online' ? `$${Number(v.total).toLocaleString()}` : '-'}</td>
-                    <td>{v.metodos_pago === 'Credito (Deuda)' ? `$${Number(v.total).toLocaleString()}` : '-'}</td>
-                    <td className="fw-bold">{v.total ? `$${Number(v.total).toLocaleString()}` : '-'}</td>
-                    <td className="text-danger">{v.metodos_pago === 'Credito (Deuda)' ? `$${Number(v.total).toLocaleString()}` : '-'}</td>
+                {groupedVentas.map((r) => (
+                  <tr key={r.key}>
+                    <td>{formatDate(r.fecha)}</td>
+                    <td>{r.sucursal}</td>
+                    <td>{r.efectivo ? `$${Number(r.efectivo).toLocaleString()}` : '-'}</td>
+                    <td>{r.transferencia ? `$${Number(r.transferencia).toLocaleString()}` : '-'}</td>
+                    <td>{r.tDebito ? `$${Number(r.tDebito).toLocaleString()}` : '-'}</td>
+                    <td>{r.tCredito ? `$${Number(r.tCredito).toLocaleString()}` : '-'}</td>
+                    <td>{r.cheque ? `$${Number(r.cheque).toLocaleString()}` : '-'}</td>
+                    <td>{r.online ? `$${Number(r.online).toLocaleString()}` : '-'}</td>
+                    <td>{r.creditoDeuda ? `$${Number(r.creditoDeuda).toLocaleString()}` : '-'}</td>
+                    <td className="fw-bold">{r.totalVentaDia ? `$${Number(r.totalVentaDia).toLocaleString()}` : '-'}</td>
+                    <td className="text-danger">{r.deudaDia ? `$${Number(r.deudaDia).toLocaleString()}` : '-'}</td>
                     <td>
-                      <button 
+                      <button
                         className="btn btn-sm btn-primary"
-                        onClick={() => handleVerDia(v.fecha)}
+                        onClick={() => handleVerDia(r.fecha, r.sucursal_id ?? r.sucursal)}
                       >
                         Ver Día
                       </button>

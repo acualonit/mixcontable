@@ -4,7 +4,7 @@ import { fetchClienteByRut } from '../../utils/configApi';
 import DetalleVenta from './DetalleVenta';
 import NuevaVenta from './NuevaVenta';
 
-function VentasDiarias({ fecha, onBack }) {
+function VentasDiarias({ fecha, sucursal, onBack }) {
   const [ventas, setVentas] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -29,7 +29,7 @@ function VentasDiarias({ fecha, onBack }) {
     if (!f) return;
     setLoading(true);
     setError(null);
-    ventasApi.listVentas({ fecha: f })
+    ventasApi.listVentas({ fecha: f, ...(sucursal ? { sucursal } : {}) })
       .then((res) => {
         if (!mounted) return;
         const list = Array.isArray(res) ? res : (res?.data ?? []);
@@ -43,7 +43,7 @@ function VentasDiarias({ fecha, onBack }) {
       })
       .finally(() => { if (mounted) setLoading(false); });
     return () => { mounted = false; };
-  }, [fecha]);
+  }, [fecha, sucursal]);
 
   const calcularTotales = () => {
     const t = {
@@ -121,7 +121,7 @@ function VentasDiarias({ fecha, onBack }) {
   const totales = calcularTotales();
 
   const handleExport = () => {
-    ventasApi.exportVentas({ fecha: normFecha(fecha) }).catch(err => {
+    ventasApi.exportVentas({ fecha: normFecha(fecha), ...(sucursal ? { sucursal } : {}) }).catch(err => {
       console.error('Error exportando', err);
       alert('Error al exportar');
     });

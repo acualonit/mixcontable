@@ -156,7 +156,9 @@ return [
     |
     */
 
-    'domain' => env('SESSION_DOMAIN'),
+    // En desarrollo (Vite proxy /api) mantenemos la cookie en el mismo host (localhost)
+    // para que el navegador la envíe correctamente.
+    'domain' => env('SESSION_DOMAIN', null),
 
     /*
     |--------------------------------------------------------------------------
@@ -169,7 +171,8 @@ return [
     |
     */
 
-    'secure' => env('SESSION_SECURE_COOKIE'),
+    // En http local, no marcar la cookie como Secure.
+    'secure' => env('SESSION_SECURE_COOKIE', false),
 
     /*
     |--------------------------------------------------------------------------
@@ -199,6 +202,7 @@ return [
     |
     */
 
+    // Para SPA en desarrollo, Lax suele ser suficiente y evita restricciones de cookies.
     'same_site' => env('SESSION_SAME_SITE', 'lax'),
 
     /*
@@ -212,6 +216,7 @@ return [
     |
     */
 
+    // En desarrollo no usamos cookies particionadas.
     'partitioned' => env('SESSION_PARTITIONED_COOKIE', false),
 
 ];

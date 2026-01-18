@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { fetchSaldo, fetchMovimientos, createMovimiento, updateMovimiento, deleteMovimiento, fetchDeletedMovimientos } from '../utils/efectivoApi';
+import { getSavedUser } from '../utils/authApi';
+import { fetchSucursales, fetchEmpresas, fetchUsuarios } from '../utils/configApi';
 
 function Efectivo() {
   const [showNuevoMovimiento, setShowNuevoMovimiento] = useState(false);
@@ -8,8 +10,19 @@ function Efectivo() {
     fecha: new Date().toISOString().split('T')[0],
     valor: '',
     detalle: '',
-    tipo: 'ingreso'
+    tipo: 'ingreso',
+    sucursal: ''
   });
+  const [sucursales, setSucursales] = useState([]);
+  const sucursalesMap = React.useMemo(() => {
+    const map = {};
+    (sucursales || []).forEach(s => {
+      const id = s.id ?? s.value ?? s.key ?? null;
+      const name = s.nombre ?? s.name ?? s.sucursal_nombre ?? s.label ?? String(s);
+      if (id != null) map[String(id)] = name;
+    });
+    return map;
+  }, [sucursales]);
   const [editingId, setEditingId] = useState(null);
   const [showViewMovimiento, setShowViewMovimiento] = useState(false);
   const [viewMovimiento, setViewMovimiento] = useState(null);
@@ -32,12 +45,12 @@ function Efectivo() {
         try {
           const u = await fetchUsuarios();
           const map = {};
-          (u?.users || u?.data || []).forEach(x => {
+          const usersList = Array.isArray(u) ? u : (u?.data ?? u?.users ?? []);
+          usersList.forEach(x => {
             map[String(x.id)] = x.name ?? x.username ?? `${x.name ?? ''}`;
           });
           setUsersMap(map);
         } catch (err) {
-          // ignore users load error
           setUsersMap({});
         }
       } catch (err) {
@@ -47,6 +60,27 @@ function Efectivo() {
       }
     };
     load();
+  }, []);
+
+  const currentUser = getSavedUser();
+  const isAdmin = (currentUser?.role || '').toString().toUpperCase() === 'ADMINISTRADOR';
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const empresasRes = await fetchEmpresas();
+        const empresa = Array.isArray(empresasRes) ? empresasRes[0] : (empresasRes?.data ? empresasRes.data[0] : null);
+        if (!empresa) return;
+        const suc = await fetchSucursales(empresa.id);
+        if (!mounted) return;
+        const list = Array.isArray(suc) ? suc : (suc?.data ?? suc?.sucursales ?? []);
+        setSucursales(list);
+      } catch (err) {
+        // ignore
+      }
+    })();
+    return () => { mounted = false; };
   }, []);
 
   const handleSubmit = (e) => {
@@ -59,8 +93,24 @@ function Efectivo() {
           detalle: nuevoMovimiento.detalle,
           tipo: nuevoMovimiento.tipo,
           monto: parseFloat(nuevoMovimiento.valor),
-          caja_id: 1
+            caja_id: 1,
+            sucursal: undefined
         };
+          // Asignar sucursal: si es administrador, usar la elección (id),
+          // si no es administrador, tomar el id de sucursal del usuario guardado (preferir numeric).
+          if (isAdmin) {
+            if (nuevoMovimiento.sucursal) {
+              const val = nuevoMovimiento.sucursal;
+              if (typeof val === 'string' && /^\d+$/.test(val)) payload.sucursal = Number(val);
+              else payload.sucursal = val;
+            }
+          } else {
+            // buscar campos numéricos comunes en saved user
+            const possibleId = currentUser?.sucursal_id ?? currentUser?.sucursalId ?? currentUser?.sucursal ?? currentUser?.branch_id ?? currentUser?.branch ?? null;
+            // si es número en string convertir a int
+            if (typeof possibleId === 'string' && /^\d+$/.test(possibleId)) payload.sucursal = Number(possibleId);
+            else payload.sucursal = typeof possibleId === 'number' ? possibleId : null;
+          }
         if (editingId) {
           await updateMovimiento(editingId, payload);
         } else {
@@ -88,6 +138,8 @@ function Efectivo() {
       valor: m.monto,
       detalle: m.detalle ?? m.descripcion ?? '',
       tipo: (m.tipo ?? m.tipo_movimiento ?? '').toString().toLowerCase().includes('ingreso') ? 'ingreso' : 'egreso'
+      ,
+      sucursal: m.sucursal ?? m.sucursal_id ?? m.sucursalId ?? m.branch ?? m.branch_id ?? ''
     });
     setShowNuevoMovimiento(true);
   };
@@ -140,7 +192,22 @@ function Efectivo() {
         const usuarioShow = m.usuario_nombre ?? m.usuario ?? m.user ?? m.user_id ?? m.userId ?? m.origen ?? '';
       const monto = Number(m.monto) || 0;
       running = isIngreso ? running + monto : running - monto;
-      return { row: m, detalle, isIngreso, usuarioShow, monto, running };
+      // resolver sucursal: soportar múltiples claves que el backend pueda devolver
+      let sucursalShow = '';
+      const rawSucursal = (m.sucursal ?? m.sucursal_id ?? m.sucursalId ?? m.branch ?? m.branch_id ?? m.branchId ?? null);
+      const rawSucursalName = m.sucursal_nombre ?? m.sucursal_name ?? m.sucursalName ?? null;
+      if (rawSucursal !== null && rawSucursal !== undefined && String(rawSucursal).toString().trim() !== '') {
+        const sStr = String(rawSucursal);
+        if (/^\d+$/.test(sStr)) {
+          sucursalShow = sucursalesMap[sStr] ?? sStr;
+        } else {
+          sucursalShow = sStr;
+        }
+      } else if (rawSucursalName) {
+        sucursalShow = rawSucursalName;
+      }
+
+      return { row: m, detalle, isIngreso, usuarioShow, monto, running, sucursalShow };
     });
 
     const totalMonto = rows.reduce((s, r) => s + (Number(r.monto) || 0), 0);
@@ -202,7 +269,16 @@ function Efectivo() {
                   <dd className="col-sm-8">{new Intl.NumberFormat('es-CL').format(viewMovimiento.monto)}</dd>
 
                   <dt className="col-sm-4">Sucursal</dt>
-                  <dd className="col-sm-8">{viewMovimiento.sucursal ?? ''}</dd>
+                  <dd className="col-sm-8">{(() => {
+                    const vm = viewMovimiento || {};
+                    const raw = vm.sucursal ?? vm.sucursal_id ?? vm.sucursalId ?? vm.branch ?? vm.branch_id ?? vm.branchId ?? null;
+                    const rawName = vm.sucursal_nombre ?? vm.sucursal_name ?? vm.sucursalName ?? null;
+                    if (raw !== null && raw !== undefined && String(raw).trim() !== '') {
+                      const s = String(raw);
+                      return /^\d+$/.test(s) ? (sucursalesMap[s] ?? s) : s;
+                    }
+                    return rawName ?? '';
+                  })()}</dd>
 
                   <dt className="col-sm-4">Usuario</dt>
                   <dd className="col-sm-8">{(viewMovimiento.usuario_nombre ?? (usersMap[String(viewMovimiento.user_id ?? viewMovimiento.userId ?? viewMovimiento.usuario ?? viewMovimiento.user ?? viewMovimiento.origen)] ?? viewMovimiento.usuario ?? viewMovimiento.user ?? viewMovimiento.origen ?? ''))}</dd>
@@ -354,6 +430,23 @@ function Efectivo() {
                       <option value="egreso">Salida de Efectivo</option>
                     </select>
                   </div>
+                  {isAdmin && (
+                    <div className="mb-3">
+                      <label className="form-label">Sucursal</label>
+                      <select
+                        className="form-select"
+                        value={nuevoMovimiento.sucursal}
+                        onChange={(e) => setNuevoMovimiento({ ...nuevoMovimiento, sucursal: e.target.value })}
+                      >
+                        <option value="">Seleccionar sucursal</option>
+                        {sucursales.map((s) => (
+                          <option key={s.id ?? s.value ?? s.name} value={s.id ?? s.value ?? s.name}>
+                            {s.nombre ?? s.name ?? s.sucursal_nombre ?? s}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
                 <div className="modal-footer">
                   <button 
@@ -404,7 +497,6 @@ function Efectivo() {
                   <th>Fecha</th>
                   <th>Detalle</th>
                   <th>Tipo de Movimiento</th>
-                  <th>Categoría</th>
                   <th>Sucursal</th>
                   <th>Monto</th>
                   <th>Saldo</th>
@@ -415,15 +507,15 @@ function Efectivo() {
               <tbody>
                 {movimientos.length === 0 && (
                   <tr>
-                    <td colSpan="9" className="text-center">No hay movimientos.</td>
+                    <td colSpan="8" className="text-center">No hay movimientos.</td>
                   </tr>
                 )}
                 {filteredRows.length === 0 ? (
                   <tr>
-                    <td colSpan="9" className="text-center">No hay movimientos.</td>
+                    <td colSpan="8" className="text-center">No hay movimientos.</td>
                   </tr>
                 ) : (
-                  filteredRows.map(({ row: m, detalle, isIngreso, usuarioShow, monto, running }) => {
+                  filteredRows.map(({ row: m, detalle, isIngreso, usuarioShow, monto, running, sucursalShow }) => {
                     // resolver usuario si es id
                     let displayUser = usuarioShow ?? '';
                     if (displayUser && /^[0-9]+$/.test(displayUser) && usersMap[String(displayUser)]) {
@@ -435,8 +527,7 @@ function Efectivo() {
                         <td>{m.fecha}</td>
                         <td>{detalle}</td>
                         <td>{isIngreso ? <span className="badge bg-success">Ingreso</span> : <span className="badge bg-danger">Egreso</span>}</td>
-                        <td>{m.categoria ?? ''}</td>
-                        <td>{m.sucursal ?? ''}</td>
+                        <td>{sucursalShow ?? (m.sucursal ?? '')}</td>
                         <td className={isIngreso ? 'text-success' : 'text-danger'}>{new Intl.NumberFormat('es-CL').format(monto)}</td>
                         <td className={running >= 0 ? 'text-success' : 'text-danger'}>{new Intl.NumberFormat('es-CL').format(running)}</td>
                         <td>{displayUser}</td>
@@ -458,7 +549,7 @@ function Efectivo() {
               </tbody>
               <tfoot className="table-light">
                 <tr className="fw-bold">
-                  <td colSpan="6">TOTAL</td>
+                  <td colSpan="5">TOTAL</td>
                   <td>{new Intl.NumberFormat('es-CL').format(totalAcumulado)}</td>
                   <td colSpan="2"></td>
                 </tr>

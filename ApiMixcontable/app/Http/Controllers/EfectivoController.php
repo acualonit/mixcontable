@@ -7,12 +7,49 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Log;
+use App\Services\CajaSaldoService;
 
 class EfectivoController extends Controller
 {
     // Devuelve el saldo calculado a partir de movimientos
-    public function saldo()
+    public function saldo(Request $request)
     {
+        // permitir especificar caja_id por query param, por defecto 1
+        $cajaId = (int)($request->get('caja_id') ?? 1);
+
+        // Forzar recomputo para que caja_efectivo.saldo_actual esté actualizado
+        try {
+            CajaSaldoService::recomputeSaldoActual($cajaId);
+        } catch (\Throwable $e) {
+            Log::warning('EfectivoController::saldo recompute fallo', ['error' => $e->getMessage(), 'caja_id' => $cajaId]);
+        }
+
+        // Intentar leer saldo desde tabla caja_efectivo (preferir saldo_actual)
+        try {
+            $colsCaja = Schema::getColumnListing('caja_efectivo');
+        } catch (\Throwable $e) {
+            $colsCaja = [];
+        }
+
+        $saldoCol = null;
+        if (in_array('saldo_actual', $colsCaja)) {
+            $saldoCol = 'saldo_actual';
+        } elseif (in_array('saldo_inicial', $colsCaja)) {
+            $saldoCol = 'saldo_inicial';
+        }
+
+        if ($saldoCol) {
+            try {
+                $saldoVal = DB::table('caja_efectivo')->where('id', $cajaId)->value($saldoCol);
+                if ($saldoVal === null) $saldoVal = 0.0;
+                return response()->json(['saldo' => (float)$saldoVal]);
+            } catch (\Throwable $e) {
+                Log::error('EfectivoController: error leyendo caja_efectivo saldo', ['error' => $e->getMessage(), 'caja_id' => $cajaId, 'col' => $saldoCol]);
+                // continuar al fallback
+            }
+        }
+
+        // Fallback: calcular saldo a partir de movimientos_caja (mismo comportamiento anterior)
         $cols = Schema::getColumnListing('movimientos_caja');
 
         $pick = function(array $candidates) use ($cols) {
@@ -37,7 +74,13 @@ class EfectivoController extends Controller
 
         $sql = "COALESCE(SUM(CASE WHEN `".$typeCol."` = 'ingreso' THEN `".$amountCol."` WHEN `".$typeCol."` = 'egreso' THEN -`".$amountCol."` ELSE 0 END),0) as saldo";
 
-        $query = DB::table('movimientos_caja')->selectRaw($sql);
+        $query = DB::table('movimientos_caja')->selectRaw($sql)->where(function($q) use ($cajaId, $cols) {
+            // si existe columna caja_id en movimientos_caja filtrar por caja
+            if (in_array('caja_id', $cols)) {
+                $q->where('caja_id', $cajaId);
+            }
+        });
+
         if (in_array('deleted_at', $cols)) {
             $query->whereNull('movimientos_caja.deleted_at');
         }
@@ -254,6 +297,10 @@ class EfectivoController extends Controller
             return response()->json(['message' => 'Error al insertar movimiento', 'error' => $ex->getMessage()], 500);
         }
 
+        // Recalcular saldo de caja (saldo_inicial como saldo actual)
+        $cajaId = (int)($insert['caja_id'] ?? 1);
+        CajaSaldoService::recomputeSaldoActual($cajaId);
+
         // Recuperar el registro insertado por created_at si existe, si no tomar último registro
         if (in_array('created_at', $cols)) {
             $q = DB::table('movimientos_caja')->orderBy('movimientos_caja.created_at', 'desc');
@@ -355,6 +402,14 @@ class EfectivoController extends Controller
             return response()->json(['message' => 'Error al actualizar movimiento', 'error' => $ex->getMessage()], 500);
         }
 
+        // Recalcular saldo de caja (saldo_inicial como saldo actual)
+        try {
+            $cajaId = (int)(DB::table('movimientos_caja')->where('id', $id)->value('caja_id') ?? 1);
+        } catch (\Throwable $e) {
+            $cajaId = 1;
+        }
+        CajaSaldoService::recomputeSaldoActual($cajaId);
+
         // WORKAROUND: si la columna deleted_at existe y está mal configurada con ON UPDATE, limpiarla inmediatamente
         if (in_array('deleted_at', $cols)) {
             try {
@@ -391,6 +446,15 @@ class EfectivoController extends Controller
     public function destroy($id)
     {
         $cols = Schema::getColumnListing('movimientos_caja');
+
+        // intentar capturar caja_id antes de borrar
+        $cajaId = 1;
+        try {
+            $cajaId = (int)(DB::table('movimientos_caja')->where('id', $id)->value('caja_id') ?? 1);
+        } catch (\Throwable $e) {
+            $cajaId = 1;
+        }
+
         try {
             if (in_array('deleted_at', $cols)) {
                 DB::table('movimientos_caja')->where('id', $id)->update(['deleted_at' => now()]);
@@ -401,6 +465,9 @@ class EfectivoController extends Controller
             Log::error('EfectivoController: error al eliminar movimiento', ['exception' => $ex->getMessage(), 'id' => $id]);
             return response()->json(['message' => 'Error al eliminar movimiento', 'error' => $ex->getMessage()], 500);
         }
+
+        // Recalcular saldo de caja (saldo_inicial como saldo actual)
+        CajaSaldoService::recomputeSaldoActual($cajaId);
 
         return response()->json(['message' => 'Eliminado']);
     }

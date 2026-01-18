@@ -1,33 +1,65 @@
-import React, { useState } from 'react';
-import { registrarMovimientoEfectivo } from '../../utils/efectivoUtils';
+import React, { useMemo, useState, useEffect } from 'react';
 
-function NuevaCompra({ onClose, onSave }) {
+function NuevaCompra({ onClose, onSave, proveedores = [], sucursales = [], initialData = null }) {
   const [formData, setFormData] = useState({
     fecha: new Date().toISOString().split('T')[0],
     sucursal: '',
     documentoCompra: '',
     folioCompra: '',
     proveedor: '',
+    proveedor_id: '',
     items: [{ descripcion: '', cantidad: 1, valor: 0 }],
     metodoPago1: {
       tipo: 'efectivo',
       monto: 0,
-      numeroVoucher: '',
-      numeroCheque: '',
-      fechaCobroCheque: '',
-      fechaPagoCredito: ''
     },
-    metodoPago2: {
-      tipo: '',
-      monto: 0,
-      numeroVoucher: '',
-      numeroCheque: '',
-      fechaCobroCheque: '',
-      fechaPagoCredito: ''
-    },
-    metodoDescuento: 'efectivo',
-    observaciones: ''
+    observaciones: '',
+    fecha_final: '' // nuevo campo para fecha de vencimiento si es crédito deuda
   });
+
+  const sucursalOptions = useMemo(() => {
+    if (Array.isArray(sucursales) && sucursales.length > 0) return sucursales;
+    return [
+      { id: 'central', nombre: 'Sucursal Central' },
+      { id: 'norte', nombre: 'Sucursal Norte' },
+      { id: 'sur', nombre: 'Sucursal Sur' },
+    ];
+  }, [sucursales]);
+
+  // Precargar datos si se edita una compra
+  useEffect(() => {
+    if (!initialData) return;
+    console.debug('[NuevaCompra] precargando initialData:', initialData);
+    try {
+      const detallesRaw = Array.isArray(initialData.detalles)
+        ? initialData.detalles
+        : Array.isArray(initialData.detalles?.data)
+        ? initialData.detalles.data
+        : initialData.items || [];
+
+      const items = detallesRaw.map(d => ({
+        descripcion: d.descripcion_item ?? d.descripcion ?? d.nombre ?? '',
+        cantidad: Number(d.cantidad ?? d.cant ?? 1),
+        valor: Number(d.costo_unitario ?? d.precio_unitario ?? d.valor ?? 0),
+      }));
+
+      setFormData(prev => ({
+        ...prev,
+        fecha: (initialData.fecha || prev.fecha).toString().slice(0,10),
+        sucursal: initialData.sucursal_id ?? initialData.id_sucursal ?? (initialData.sucursal && (initialData.sucursal.id ?? initialData.sucursal.ID)) ?? prev.sucursal,
+        documentoCompra: initialData.tipo_documento ?? initialData.documentoCompra ?? prev.documentoCompra,
+        folioCompra: initialData.folio ?? initialData.numero_documento ?? prev.folioCompra,
+        proveedor_id: initialData.proveedor_id ?? (initialData.proveedor && (initialData.proveedor.id ?? initialData.proveedor.ID)) ?? prev.proveedor_id,
+        proveedor: initialData.proveedor?.razon_social ?? initialData.proveedor?.nombre_comercial ?? prev.proveedor,
+        items: items.length ? items : prev.items,
+        metodoPago1: initialData.metodoPago1 ?? prev.metodoPago1,
+        observaciones: initialData.observaciones ?? prev.observaciones,
+        fecha_final: initialData.fecha_final ? initialData.fecha_final.toString().slice(0,10) : prev.fecha_final,
+      }));
+    } catch (e) {
+      console.error('Error precargando initialData en NuevaCompra', e);
+    }
+  }, [initialData]);
 
   const handleAddItem = () => {
     setFormData({
@@ -47,11 +79,11 @@ function NuevaCompra({ onClose, onSave }) {
     setFormData({ ...formData, items: newItems });
   };
 
-  const handleMetodoPagoChange = (metodoPagoNum, field, value) => {
+  const handleMetodoPagoChange = (field, value) => {
     setFormData(prev => ({
       ...prev,
-      [`metodoPago${metodoPagoNum}`]: {
-        ...prev[`metodoPago${metodoPagoNum}`],
+      metodoPago1: {
+        ...prev.metodoPago1,
         [field]: value
       }
     }));
@@ -62,7 +94,6 @@ function NuevaCompra({ onClose, onSave }) {
       return total + (item.cantidad * item.valor);
     }, 0);
 
-    // Determinar si el documento es afecto a IVA
     const documentosAfectosIVA = [
       'factura_afecta',
       'boleta_afecta',
@@ -72,63 +103,29 @@ function NuevaCompra({ onClose, onSave }) {
     const esAfectoIVA = documentosAfectosIVA.includes(formData.documentoCompra);
 
     if (esAfectoIVA) {
-      // Si es afecto a IVA, calcular subtotal e IVA
       const subtotal = Math.round(total / 1.19);
       const iva = total - subtotal;
       return { subtotal, iva, total };
-    } else {
-      // Si no es afecto a IVA, el subtotal es igual al total y el IVA es 0
-      return {
-        subtotal: total,
-        iva: 0,
-        total
-      };
     }
+
+    return { subtotal: total, iva: 0, total };
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     const { subtotal, iva, total } = calcularTotales();
 
-    // Validar que la suma de los montos de pago sea igual al total
-    const totalPagos = formData.metodoPago1.monto + (formData.metodoPago2.tipo ? formData.metodoPago2.monto : 0);
-    if (totalPagos !== total) {
-      alert('La suma de los montos de pago debe ser igual al total de la compra');
+    const montoPago = Number(formData.metodoPago1.monto || 0);
+    if (montoPago !== total) {
+      alert('El monto del pago debe ser igual al total de la compra');
       return;
     }
 
-    // Si el método de descuento es efectivo y hay pago en efectivo,
-    // registrar el movimiento en efectivo
-    if (formData.metodoDescuento === 'efectivo') {
-      if (formData.metodoPago1.tipo === 'efectivo') {
-        try {
-          await registrarMovimientoEfectivo({
-            fecha: formData.fecha,
-            valor: formData.metodoPago1.monto,
-            detalle: `Compra en efectivo - ${formData.documentoCompra} ${formData.folioCompra}`,
-            tipo: 'egreso',
-            categoria: 'Compra',
-            sucursal: formData.sucursal
-          });
-        } catch (error) {
-          alert(error.message);
-          return;
-        }
-      }
-      if (formData.metodoPago2.tipo === 'efectivo') {
-        try {
-          await registrarMovimientoEfectivo({
-            fecha: formData.fecha,
-            valor: formData.metodoPago2.monto,
-            detalle: `Compra en efectivo - ${formData.documentoCompra} ${formData.folioCompra}`,
-            tipo: 'egreso',
-            categoria: 'Compra',
-            sucursal: formData.sucursal
-          });
-        } catch (error) {
-          alert(error.message);
-          return;
-        }
+    // Si el método seleccionado es Crédito (Deuda) requerir fecha_final
+    if (formData.metodoPago1.tipo === 'credito_deuda') {
+      if (!formData.fecha_final) {
+        alert('Ingrese la fecha final (vencimiento) para la compra a crédito');
+        return;
       }
     }
 
@@ -137,7 +134,7 @@ function NuevaCompra({ onClose, onSave }) {
       subtotal,
       iva,
       total,
-      estado: formData.metodoPago1.tipo === 'credito_deuda' || formData.metodoPago2.tipo === 'credito_deuda' ? 'pendiente' : 'pagada'
+      estado: 'pagada'
     };
 
     onSave(compraData);
@@ -161,22 +158,22 @@ function NuevaCompra({ onClose, onSave }) {
                     type="date"
                     className="form-control"
                     value={formData.fecha}
-                    onChange={(e) => setFormData({...formData, fecha: e.target.value})}
+                    onChange={(e) => setFormData({ ...formData, fecha: e.target.value })}
                     required
                   />
                 </div>
                 <div className="col-md-3">
                   <label className="form-label">Sucursal</label>
-                  <select 
+                  <select
                     className="form-select"
                     value={formData.sucursal}
-                    onChange={(e) => setFormData({...formData, sucursal: e.target.value})}
+                    onChange={(e) => setFormData({ ...formData, sucursal: e.target.value })}
                     required
                   >
                     <option value="">Seleccionar sucursal</option>
-                    <option value="central">Sucursal Central</option>
-                    <option value="norte">Sucursal Norte</option>
-                    <option value="sur">Sucursal Sur</option>
+                    {sucursalOptions.map((s) => (
+                      <option key={s.id} value={s.id}>{s.nombre}</option>
+                    ))}
                   </select>
                 </div>
                 <div className="col-md-3">
@@ -184,7 +181,7 @@ function NuevaCompra({ onClose, onSave }) {
                   <select
                     className="form-select"
                     value={formData.documentoCompra}
-                    onChange={(e) => setFormData({...formData, documentoCompra: e.target.value})}
+                    onChange={(e) => setFormData({ ...formData, documentoCompra: e.target.value })}
                     required
                   >
                     <option value="">Seleccionar documento</option>
@@ -205,7 +202,7 @@ function NuevaCompra({ onClose, onSave }) {
                     type="text"
                     className="form-control"
                     value={formData.folioCompra}
-                    onChange={(e) => setFormData({...formData, folioCompra: e.target.value})}
+                    onChange={(e) => setFormData({ ...formData, folioCompra: e.target.value })}
                     required={formData.documentoCompra !== 'sin_documento'}
                   />
                 </div>
@@ -214,31 +211,46 @@ function NuevaCompra({ onClose, onSave }) {
               <div className="row mb-3">
                 <div className="col-md-6">
                   <label className="form-label">Proveedor</label>
-                  <div className="input-group">
+                  {Array.isArray(proveedores) && proveedores.length > 0 ? (
+                    <select
+                      className="form-select"
+                      value={formData.proveedor_id}
+                      onChange={(e) => {
+                        const proveedor_id = e.target.value;
+                        const p = proveedores.find((x) => String(x.id) === String(proveedor_id));
+                        setFormData({
+                          ...formData,
+                          proveedor_id,
+                          proveedor: p?.razon_social || p?.nombre_comercial || p?.rut || '',
+                        });
+                      }}
+                      required
+                    >
+                      <option value="">Seleccionar proveedor</option>
+                      {proveedores.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.razon_social || p.nombre_comercial || p.rut}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
                     <input
                       type="text"
                       className="form-control"
-                      placeholder="Buscar proveedor..."
+                      placeholder="Proveedor"
                       value={formData.proveedor}
-                      onChange={(e) => setFormData({...formData, proveedor: e.target.value})}
+                      onChange={(e) => setFormData({ ...formData, proveedor: e.target.value })}
                       required
                     />
-                    <button 
-                      type="button" 
-                      className="btn btn-primary"
-                      onClick={() => {/* Implementar búsqueda de proveedor */}}
-                    >
-                      Buscar
-                    </button>
-                  </div>
+                  )}
                 </div>
               </div>
 
               <div className="mb-3">
                 <div className="d-flex justify-content-between align-items-center mb-2">
                   <h6>Detalle de Compra</h6>
-                  <button 
-                    type="button" 
+                  <button
+                    type="button"
                     className="btn btn-sm btn-success"
                     onClick={handleAddItem}
                   >
@@ -266,7 +278,7 @@ function NuevaCompra({ onClose, onSave }) {
                         className="form-control"
                         min="1"
                         value={item.cantidad}
-                        onChange={(e) => handleItemChange(index, 'cantidad', parseInt(e.target.value))}
+                        onChange={(e) => handleItemChange(index, 'cantidad', parseFloat(e.target.value))}
                         required
                       />
                     </div>
@@ -282,8 +294,8 @@ function NuevaCompra({ onClose, onSave }) {
                       />
                     </div>
                     <div className="col-md-2">
-                      <button 
-                        type="button" 
+                      <button
+                        type="button"
                         className="btn btn-danger btn-sm w-100"
                         onClick={() => handleRemoveItem(index)}
                         disabled={formData.items.length === 1}
@@ -295,14 +307,13 @@ function NuevaCompra({ onClose, onSave }) {
                 ))}
               </div>
 
-              {/* Primer Método de Pago */}
               <div className="row mb-3">
                 <div className="col-md-4">
-                  <label className="form-label">Primer Método de Pago</label>
-                  <select 
+                  <label className="form-label">Método de Pago</label>
+                  <select
                     className="form-select"
                     value={formData.metodoPago1.tipo}
-                    onChange={(e) => handleMetodoPagoChange(1, 'tipo', e.target.value)}
+                    onChange={(e) => handleMetodoPagoChange('tipo', e.target.value)}
                     required
                   >
                     <option value="">Seleccionar método</option>
@@ -321,157 +332,23 @@ function NuevaCompra({ onClose, onSave }) {
                     type="number"
                     className="form-control"
                     value={formData.metodoPago1.monto}
-                    onChange={(e) => handleMetodoPagoChange(1, 'monto', parseFloat(e.target.value))}
+                    onChange={(e) => handleMetodoPagoChange('monto', parseFloat(e.target.value))}
                     required
                   />
                 </div>
-                {(formData.metodoPago1.tipo === 'debito' || formData.metodoPago1.tipo === 'credito') && (
-                  <div className="col-md-4">
-                    <label className="form-label">Número de Voucher</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      value={formData.metodoPago1.numeroVoucher}
-                      onChange={(e) => handleMetodoPagoChange(1, 'numeroVoucher', e.target.value)}
-                      required
-                    />
-                  </div>
-                )}
-                {formData.metodoPago1.tipo === 'cheque' && (
-                  <>
-                    <div className="col-md-4">
-                      <label className="form-label">Número de Cheque</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        value={formData.metodoPago1.numeroCheque}
-                        onChange={(e) => handleMetodoPagoChange(1, 'numeroCheque', e.target.value)}
-                        required
-                      />
-                    </div>
-                    <div className="col-md-4">
-                      <label className="form-label">Fecha de Cobro</label>
-                      <input
-                        type="date"
-                        className="form-control"
-                        value={formData.metodoPago1.fechaCobroCheque}
-                        onChange={(e) => handleMetodoPagoChange(1, 'fechaCobroCheque', e.target.value)}
-                        required
-                      />
-                    </div>
-                  </>
-                )}
+                {/* Campo condicional fecha_final para Crédito (Deuda) */}
                 {formData.metodoPago1.tipo === 'credito_deuda' && (
                   <div className="col-md-4">
-                    <label className="form-label">Fecha de Pago</label>
+                    <label className="form-label">Fecha final (vencimiento)</label>
                     <input
                       type="date"
                       className="form-control"
-                      value={formData.metodoPago1.fechaPagoCredito}
-                      onChange={(e) => handleMetodoPagoChange(1, 'fechaPagoCredito', e.target.value)}
+                      value={formData.fecha_final || ''}
+                      onChange={(e) => setFormData(prev => ({ ...prev, fecha_final: e.target.value }))}
                       required
                     />
                   </div>
                 )}
-              </div>
-
-              {/* Segundo Método de Pago */}
-              <div className="row mb-3">
-                <div className="col-md-4">
-                  <label className="form-label">Segundo Método de Pago (Opcional)</label>
-                  <select 
-                    className="form-select"
-                    value={formData.metodoPago2.tipo}
-                    onChange={(e) => handleMetodoPagoChange(2, 'tipo', e.target.value)}
-                  >
-                    <option value="">Ninguno</option>
-                    <option value="efectivo">Efectivo</option>
-                    <option value="transferencia">Transferencia</option>
-                    <option value="debito">Tarjeta Débito</option>
-                    <option value="credito">Tarjeta Crédito</option>
-                    <option value="cheque">Cheque</option>
-                    <option value="online">Pago Online</option>
-                    <option value="credito_deuda">Crédito (Deuda)</option>
-                  </select>
-                </div>
-                {formData.metodoPago2.tipo && (
-                  <div className="col-md-4">
-                    <label className="form-label">Monto</label>
-                    <input
-                      type="number"
-                      className="form-control"
-                      value={formData.metodoPago2.monto}
-                      onChange={(e) => handleMetodoPagoChange(2, 'monto', parseFloat(e.target.value))}
-                      required
-                    />
-                  </div>
-                )}
-                {(formData.metodoPago2.tipo === 'debito' || formData.metodoPago2.tipo === 'credito') && (
-                  <div className="col-md-4">
-                    <label className="form-label">Número de Voucher</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      value={formData.metodoPago2.numeroVoucher}
-                      onChange={(e) => handleMetodoPagoChange(2, 'numeroVoucher', e.target.value)}
-                      required
-                    />
-                  </div>
-                )}
-                {formData.metodoPago2.tipo === 'cheque' && (
-                  <>
-                    <div className="col-md-4">
-                      <label className="form-label">Número de Cheque</label>
-                      <input
-                        type="text"
-                        className="form-control"
-                        value={formData.metodoPago2.numeroCheque}
-                        onChange={(e) => handleMetodoPagoChange(2, 'numeroCheque', e.target.value)}
-                        required
-                      />
-                    </div>
-                    <div className="col-md-4">
-                      <label className="form-label">Fecha de Cobro</label>
-                      <input
-                        type="date"
-                        className="form-control"
-                        value={formData.metodoPago2.fechaCobroCheque}
-                        onChange={(e) => handleMetodoPagoChange(2, 'fechaCobroCheque', e.target.value)}
-                        required
-                      />
-                    </div>
-                  </>
-                )}
-                {formData.metodoPago2.tipo === 'credito_deuda' && (
-                  <div className="col-md-4">
-                    <label className="form-label">Fecha de Pago</label>
-                    <input
-                      type="date"
-                      className="form-control"
-                      value={formData.metodoPago2.fechaPagoCredito}
-                      onChange={(e) => handleMetodoPagoChange(2, 'fechaPagoCredito', e.target.value)}
-                      required
-                    />
-                  </div>
-                )}
-              </div>
-
-              {/* Método para Descontar de Caja */}
-              <div className="mb-3">
-                <label className="form-label">Método para Descontar de Caja</label>
-                <select
-                  className="form-select"
-                  value={formData.metodoDescuento}
-                  onChange={(e) => setFormData({...formData, metodoDescuento: e.target.value})}
-                  required
-                >
-                  <option value="efectivo">Efectivo</option>
-                  <option value="banco">Banco</option>
-                  <option value="no_descontar">No Descontar</option>
-                </select>
-                <small className="text-muted d-block mt-1">
-                  Si eliges "No Descontar" la compra quedará registrada pero no se reflejará en el Flujo de Caja.
-                </small>
               </div>
 
               <div className="mb-3">
@@ -480,7 +357,7 @@ function NuevaCompra({ onClose, onSave }) {
                   className="form-control"
                   rows="2"
                   value={formData.observaciones}
-                  onChange={(e) => setFormData({...formData, observaciones: e.target.value})}
+                  onChange={(e) => setFormData({ ...formData, observaciones: e.target.value })}
                 ></textarea>
               </div>
 

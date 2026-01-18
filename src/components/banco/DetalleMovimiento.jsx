@@ -11,6 +11,8 @@ function DetalleMovimiento({ movimiento, onClose }) {
   const sucursal = movimiento.cuenta_sucursal_nombre ?? movimiento.sucursal ?? '';
   const valor = movimiento.__valor ?? Number(movimiento.monto ?? movimiento.valor ?? movimiento.amount ?? 0);
   const saldo = movimiento.__rowSaldo ?? movimiento.saldo ?? 0;
+  // Resolver nombre de usuario con múltiples posibles campos que pueda traer el backend
+  const usuarioDisplay = movimiento.usuario_nombre ?? movimiento.usuario ?? movimiento.user ?? movimiento.usuario_nombre_completo ?? movimiento.user_nombre ?? movimiento.userId ?? movimiento.origen ?? '';
 
   return (
     <div className="modal d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
@@ -99,7 +101,7 @@ function DetalleMovimiento({ movimiento, onClose }) {
 
             <div className="mb-4">
               <h6>Información de Usuario</h6>
-              <p><strong>Registrado por:</strong> {movimiento.usuario || 'Sistema'}</p>
+              <p><strong>Registrado por:</strong> {usuarioDisplay || 'Sistema'}</p>
             </div>
           </div>
           <div className="modal-footer">
