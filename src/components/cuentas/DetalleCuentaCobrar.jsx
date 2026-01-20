@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import ventasApi from '../../utils/ventasApi';
 
 // Helper para parsear fechas y formatear a DD/MM/YYYY
 const parseDate = (val) => {
@@ -38,18 +39,68 @@ const formatMoney = (v) => {
 };
 
 function DetalleCuentaCobrar({ cuenta, onClose }) {
-  if (!cuenta) return null;
+  const [detalle, setDetalle] = useState(cuenta);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let mounted = true;
+    setDetalle(cuenta);
+    setError('');
+
+    const cargarPagosSiNecesario = async () => {
+      try {
+        if (!mounted) return;
+        // Si ya vienen pagos en la cuenta, no pedirlos
+        if (cuenta?.historialPagos && cuenta.historialPagos.length > 0) return;
+
+        setCargando(true);
+        let res = null;
+        // Caso: cuenta viene de una venta mapeada con id 'venta-<id>'
+        if (cuenta && String(cuenta.id).startsWith('venta-')) {
+          const ventaId = String(cuenta.id).replace(/^venta-/, '');
+          try { res = await ventasApi.getPagosPorVenta(ventaId); } catch (e) { res = null; }
+        } else if (cuenta && (typeof cuenta.id === 'number' || /^\d+$/.test(String(cuenta.id)))) {
+          // Si es una cuenta con id numérico, pedir pagos por cuenta
+          try { res = await ventasApi.getPagosPorCuenta(cuenta.id); } catch (e) { res = null; }
+        }
+
+        if (!mounted) return;
+        if (res && Array.isArray(res.pagos) && res.pagos.length > 0) {
+          const pagosNorm = res.pagos.map(p => ({
+            fecha: p.fecha_pago ?? p.fecha ?? p.created_at ?? null,
+            monto: Number(p.monto ?? p.monto_pagado ?? p.valor ?? p.importe ?? 0) || 0,
+            metodoPago: p.metodo_pago ?? p.metodo ?? p.tipo ?? null,
+            comprobante: p.comprobante ?? p.referencia ?? p.nota ?? null,
+            usuario: p.usuario ?? p.usuario_id ?? p.user_id ?? p.created_by ?? null,
+          }));
+
+          setDetalle(prev => ({ ...prev, historialPagos: pagosNorm, montoPagado: res.monto_total ?? pagosNorm.reduce((s, x) => s + (x.monto || 0), 0) }));
+        }
+      } catch (e) {
+        if (mounted) setError('Error cargando pagos: ' + (e?.message || e));
+      } finally {
+        if (mounted) setCargando(false);
+      }
+    };
+
+    cargarPagosSiNecesario();
+
+    return () => { mounted = false; };
+  }, [cuenta]);
+
+  if (!detalle) return null;
 
   // Campos con posibles nombres distintos en origen de datos
-  const contacto = cuenta.contacto ?? cuenta.contacto_nombre ?? cuenta.cliente_contacto ?? '';
-  const telefono = cuenta.telefono ?? cuenta.telefono_contacto ?? cuenta.contacto_telefono ?? '';
-  const numeroDocumento = cuenta.numeroDocumento ?? cuenta.documento ?? cuenta.folio ?? cuenta.numero ?? '';
-  const tipoDocumento = cuenta.tipoDocumento ?? cuenta.tipo_documento ?? cuenta.documentoTipo ?? '';
+  const contacto = detalle.contacto ?? detalle.contacto_nombre ?? detalle.cliente_contacto ?? '';
+  const telefono = detalle.telefono ?? detalle.telefono_contacto ?? detalle.contacto_telefono ?? '';
+  const numeroDocumento = detalle.cuentaId ?? detalle.cuenta_cobrar_id ?? detalle.numeroDocumento ?? detalle.documento ?? detalle.folio ?? detalle.numero ?? '';
+  const tipoDocumento = detalle.tipoDocumento ?? detalle.tipo_documento ?? detalle.documentoTipo ?? '';
   // Mostrar las fechas tal cual vienen de la base de datos
-  const fechaEmision = cuenta.fechaEmision ?? cuenta.fecha ?? cuenta.fecha_emision ?? '';
-  const fechaVencimiento = cuenta.fechaVencimiento ?? cuenta.fecha_final ?? cuenta.fecha_vencimiento ?? '';
-  const montoTotal = Number(cuenta.montoTotal ?? cuenta.total ?? cuenta.monto ?? 0);
-  const montoPagado = Number(cuenta.montoPagado ?? cuenta.monto_pagado ?? cuenta.pagado ?? 0);
+  const fechaEmision = detalle.fechaEmision ?? detalle.fecha ?? detalle.fecha_emision ?? '';
+  const fechaVencimiento = detalle.fechaVencimiento ?? detalle.fecha_final ?? detalle.fecha_vencimiento ?? '';
+  const montoTotal = Number(detalle.montoTotal ?? detalle.total ?? detalle.monto ?? 0);
+  const montoPagado = Number((detalle.montoPagado ?? detalle.monto_pagado ?? detalle.pagado ?? 0));
   const saldoPendiente = Math.max(0, montoTotal - montoPagado);
 
   return (
@@ -61,6 +112,8 @@ function DetalleCuentaCobrar({ cuenta, onClose }) {
             <button type="button" className="btn-close" onClick={onClose}></button>
           </div>
           <div className="modal-body">
+            {cargando && <div className="alert alert-info">Cargando pagos...</div>}
+            {error && <div className="alert alert-danger">{error}</div>}
             <div className="row mb-4">
               <div className="col-md-6">
                 <h6>Información del Cliente</h6>
@@ -68,11 +121,11 @@ function DetalleCuentaCobrar({ cuenta, onClose }) {
                   <tbody>
                     <tr>
                       <th>Cliente:</th>
-                      <td>{cuenta.cliente}</td>
+                      <td>{detalle.cliente}</td>
                     </tr>
                     <tr>
                       <th>RUT:</th>
-                      <td>{cuenta.rut}</td>
+                      <td>{detalle.rut}</td>
                     </tr>
                     <tr>
                       <th>Contacto:</th>
@@ -136,15 +189,20 @@ function DetalleCuentaCobrar({ cuenta, onClose }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {cuenta.historialPagos?.map((pago, index) => (
+                    {detalle.historialPagos?.map((pago, index) => (
                       <tr key={index}>
-                        <td>{formatDate(pago.fecha)}</td>
+                        <td>{formatDate(pago.fecha ?? pago.fecha_pago ?? pago.created_at)}</td>
                         <td>${formatMoney(pago.monto)}</td>
                         <td>{pago.metodoPago ?? pago.metodo ?? pago.metodo_pago}</td>
                         <td>{pago.comprobante}</td>
-                        <td>{pago.usuario}</td>
+                        <td>{pago.usuario ?? (pago.usuario_id ? `Usuario #${pago.usuario_id}` : '')}</td>
                       </tr>
                     ))}
+                    {(!detalle.historialPagos || detalle.historialPagos.length === 0) && (
+                      <tr>
+                        <td colSpan="5" className="text-center">No hay pagos registrados</td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -152,7 +210,7 @@ function DetalleCuentaCobrar({ cuenta, onClose }) {
 
             <div className="mb-4">
               <h6>Observaciones</h6>
-              <p>{cuenta.observaciones ?? cuenta.observacion ?? 'Sin observaciones'}</p>
+              <p>{detalle.observaciones ?? detalle.observacion ?? 'Sin observaciones'}</p>
             </div>
           </div>
           <div className="modal-footer">

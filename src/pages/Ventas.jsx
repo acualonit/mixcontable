@@ -77,17 +77,8 @@ function Ventas() {
         handleBuscar();
       })
       .catch(err => {
-        console.error('Error creando venta:', err);
-        // Mostrar errores de validación si API los devuelve en err.body.errors
-        const body = err && err.body ? err.body : null;
-        if (body && body.errors) {
-          const messages = Object.entries(body.errors).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n');
-          alert('Errores de validación:\n' + messages);
-        } else if (body && body.message) {
-          alert(body.message);
-        } else {
-          alert(err.message || 'Error al guardar la venta');
-        }
+        console.error(err);
+        alert(err.message || 'Error al guardar la venta');
       });
   };
 

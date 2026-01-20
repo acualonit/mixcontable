@@ -115,6 +115,37 @@ class VentasController extends Controller
             }
         }
 
+        // Incluir cliente (nombre y rut) si existe tabla clientes y FK cliente_id
+        try {
+            if (Schema::hasTable('clientes') && Schema::hasColumn('ventas', 'cliente_id')) {
+                $cliCols = Schema::getColumnListing('clientes');
+
+                $nameCandidates = [];
+                foreach (['nombre', 'razon_social', 'name', 'cliente', 'nombre_cliente'] as $c) {
+                    if (in_array($c, $cliCols)) $nameCandidates[] = "clientes.$c";
+                }
+                $rutCandidates = [];
+                foreach (['rut', 'rut_cliente', 'dni', 'documento'] as $c) {
+                    if (in_array($c, $cliCols)) $rutCandidates[] = "clientes.$c";
+                }
+
+                $selectNombre = "''";
+                if (!empty($nameCandidates)) {
+                    $selectNombre = 'COALESCE(' . implode(', ', $nameCandidates) . ')';
+                }
+                $selectRut = "''";
+                if (!empty($rutCandidates)) {
+                    $selectRut = 'COALESCE(' . implode(', ', $rutCandidates) . ')';
+                }
+
+                $q->leftJoin('clientes', 'ventas.cliente_id', '=', 'clientes.id')
+                  ->addSelect(DB::raw($selectNombre . ' as cliente_nombre'))
+                  ->addSelect(DB::raw($selectRut . ' as cliente_rut'));
+            }
+        } catch (\Throwable $e) {
+            // ignore
+        }
+
         // Resolver sucursal_nombre vía join a sucursales (si existe)
         try {
             if (Schema::hasTable('sucursales') && Schema::hasColumn('ventas', 'sucursal_id')) {
@@ -170,6 +201,11 @@ class VentasController extends Controller
                         $u = $this->extraerUsuarioEliminacionDesdeObservaciones($r->observaciones ?? null);
                         if (!empty($u)) $r->usuario = $u;
                     }
+                }
+
+                // compatibilidad: exponer también como 'cliente' si el frontend lo intenta leer
+                if (empty($r->cliente) && !empty($r->cliente_nombre)) {
+                    $r->cliente = $r->cliente_nombre;
                 }
             } catch (\Throwable $e) {
                 // ignore
@@ -323,6 +359,86 @@ class VentasController extends Controller
                 }
             } catch (\Exception $e) {
                 // ignore
+            }
+
+            // NUEVO: buscar pagos en CxC relacionados a esta venta y adjuntarlos al objeto devuelto
+            try {
+                $pagos = [];
+                $montoPagado = 0.0;
+
+                if (Schema::hasTable('pagos_cuentas_cobrar')) {
+                    // Preferir relacion directa por venta_id si existe
+                    if (Schema::hasColumn('pagos_cuentas_cobrar', 'venta_id')) {
+                        $q = DB::table('pagos_cuentas_cobrar')->where('venta_id', $venta->id);
+
+                        // Selección de columnas comunes
+                        $selectCols = ['id'];
+                        $pcCols = Schema::getColumnListing('pagos_cuentas_cobrar');
+                        foreach (['fecha', 'created_at', 'fecha_pago'] as $c) if (in_array($c, $pcCols)) $selectCols[] = $c;
+                        foreach (['monto_pagado', 'monto', 'valor', 'importe'] as $c) if (in_array($c, $pcCols)) $selectCols[] = $c;
+                        foreach (['metodo', 'metodo_pago', 'tipo', 'forma_pago'] as $c) if (in_array($c, $pcCols)) $selectCols[] = $c;
+                        foreach (['comprobante', 'referencia', 'nota'] as $c) if (in_array($c, $pcCols)) $selectCols[] = $c;
+                        foreach (['user_id', 'usuario_id', 'created_by'] as $c) if (in_array($c, $pcCols)) $selectCols[] = $c;
+
+                        $selectCols = array_unique($selectCols);
+
+                        $rawPagos = $q->select($selectCols)->orderBy('id', 'asc')->get();
+                        foreach ($rawPagos as $p) {
+                            $pArr = (array) $p;
+                            // intentar extraer monto por columnas conocidas
+                            $m = 0.0;
+                            foreach (['monto_pagado', 'monto', 'valor', 'importe'] as $c) {
+                                if (array_key_exists($c, $pArr) && !empty($pArr[$c])) { $m = (float)$pArr[$c]; break; }
+                            }
+                            $montoPagado += $m;
+                            $pagos[] = $pArr;
+                        }
+                    } else {
+                        // Si no existe venta_id en pagos, buscar cuentas_cobrar vinculadas a la venta y sus pagos
+                        if (Schema::hasTable('cuentas_cobrar') && Schema::hasColumn('cuentas_cobrar', 'venta_id')) {
+                            $cuentas = DB::table('cuentas_cobrar')->where('venta_id', $venta->id)->pluck('id')->toArray();
+                            if (!empty($cuentas)) {
+                                $q = DB::table('pagos_cuentas_cobrar')->whereIn('cuenta_cobrar_id', $cuentas);
+                                $pcCols = Schema::getColumnListing('pagos_cuentas_cobrar');
+                                $selectCols = ['id'];
+                                foreach (['fecha', 'created_at', 'fecha_pago'] as $c) if (in_array($c, $pcCols)) $selectCols[] = $c;
+                                foreach (['monto_pagado', 'monto', 'valor', 'importe'] as $c) if (in_array($c, $pcCols)) $selectCols[] = $c;
+                                foreach (['metodo', 'metodo_pago', 'tipo', 'forma_pago'] as $c) if (in_array($c, $pcCols)) $selectCols[] = $c;
+                                foreach (['comprobante', 'referencia', 'nota'] as $c) if (in_array($c, $pcCols)) $selectCols[] = $c;
+                                foreach (['user_id', 'usuario_id', 'created_by'] as $c) if (in_array($c, $pcCols)) $selectCols[] = $c;
+                                $selectCols = array_unique($selectCols);
+
+                                $rawPagos = $q->select($selectCols)->orderBy('id', 'asc')->get();
+                                foreach ($rawPagos as $p) {
+                                    $pArr = (array) $p;
+                                    $m = 0.0;
+                                    foreach (['monto_pagado', 'monto', 'valor', 'importe'] as $c) {
+                                        if (array_key_exists($c, $pArr) && !empty($pArr[$c])) { $m = (float)$pArr[$c]; break; }
+                                    }
+                                    $montoPagado += $m;
+                                    $pagos[] = $pArr;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: si no hay tabla de pagos, intentar leer monto en la propia venta (sin persistir cambios)
+                if (empty($pagos)) {
+                    $cols = Schema::hasTable('ventas') ? Schema::getColumnListing('ventas') : [];
+                    foreach (['monto_pagado', 'montoPagado', 'pagado', 'total_pagado', 'abonado', 'abono', 'saldo_pagado'] as $c) {
+                        if (in_array($c, $cols) && !empty($venta->{$c})) {
+                            $montoPagado = max($montoPagado, (float)$venta->{$c});
+                        }
+                    }
+                }
+
+                // Adjuntar datos al objeto de respuesta sin modificar la tabla ventas
+                $venta->pagos = $pagos;
+                $venta->monto_pagado = $montoPagado;
+            } catch (\Throwable $e) {
+                try { Log::warning('VentasController@store: error adjuntando pagos a venta', ['error' => $e->getMessage(), 'venta_id' => $venta->id ?? null]); } catch (\Throwable $__) {}
+                // continuar sin bloquear la respuesta
             }
 
             return response()->json($venta, 201);
@@ -589,13 +705,84 @@ class VentasController extends Controller
         }
     }
 
-            
+    /**
+     * Determina si una venta (Crédito/Deuda) tiene pagos aplicados.
+     *
+     * Nota: en este sistema, las ventas a crédito se reflejan como cuentas y los pagos
+     * pueden quedar persistidos en la propia venta con columnas tipo `monto_pagado`/`pagado`.
+     * Si en tu BD los pagos se registran en otra tabla, aquí es el lugar para agregar la validación.
+     */
+    private function ventaCreditoTienePagos(Venta $venta): bool
+    {
+        try {
+            $metodo = strtolower(trim((string)($venta->metodos_pago ?? '')));
+            if ($metodo !== 'credito (deuda)') return false;
+
+            // 1) Si existe tabla de pagos de CxC, comprobar allí primero
+            try {
+                if (Schema::hasTable('pagos_cuentas_cobrar')) {
+                    // Si la tabla de pagos contiene referencia directa a venta_id
+                    if (Schema::hasColumn('pagos_cuentas_cobrar', 'venta_id')) {
+                        $count = DB::table('pagos_cuentas_cobrar')
+                            ->where('venta_id', $venta->id)
+                            ->where(function ($q) {
+                                // columnas comunes para monto en la tabla de pagos
+                                if (Schema::hasColumn('pagos_cuentas_cobrar', 'monto_pagado')) $q->orWhere('monto_pagado', '>', 0);
+                                if (Schema::hasColumn('pagos_cuentas_cobrar', 'monto')) $q->orWhere('monto', '>', 0);
+                            })
+                            ->count();
+                        if ($count > 0) return true;
+                    }
+
+                    // Si no hay columna venta_id, intentar por relación con cuentas_cobrar (cuentas vinculadas a venta)
+                    if (Schema::hasTable('cuentas_cobrar') && Schema::hasColumn('cuentas_cobrar', 'venta_id')) {
+                        $cuentas = DB::table('cuentas_cobrar')->where('venta_id', $venta->id)->pluck('id')->toArray();
+                        if (!empty($cuentas)) {
+                            $q = DB::table('pagos_cuentas_cobrar')->whereIn('cuenta_cobrar_id', $cuentas);
+                            if (Schema::hasColumn('pagos_cuentas_cobrar', 'monto_pagado')) $q->where('monto_pagado', '>', 0);
+                            elseif (Schema::hasColumn('pagos_cuentas_cobrar', 'monto')) $q->where('monto', '>', 0);
+                            else $q->whereRaw('1 = 1'); // sin columna de monto asumimos existencia como pago
+
+                            if ($q->count() > 0) return true;
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                // si falla la consulta a tablas de pagos, seguir con el fallback
+                try { Log::warning('ventaCreditoTienePagos: error comprobando pagos CxC', ['error' => $e->getMessage(), 'venta_id' => $venta->id]); } catch (\Throwable $__) {}
+            }
+
+            // 2) Fallback: buscar campos en la propia fila de ventas que indiquen abonos/pagos
+            $montoPagado = 0;
+            foreach (['monto_pagado', 'montoPagado', 'pagado', 'total_pagado', 'abonado', 'abono', 'saldo_pagado'] as $col) {
+                try {
+                    if (Schema::hasColumn('ventas', $col)) {
+                        $montoPagado = max($montoPagado, (float)($venta->{$col} ?? 0));
+                    }
+                } catch (\Throwable $e) {
+                    // ignore
+                }
+            }
+
+            return $montoPagado > 0.00001;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
 
     public function update(Request $request, $id)
     {
         $venta = Venta::find($id);
         if (!$venta) {
             return response()->json(['message' => 'Venta no encontrada'], 404);
+        }
+
+        // Bloqueo: si es Crédito (Deuda) y ya tiene pagos registrados, no permitir edición
+        if ($this->ventaCreditoTienePagos($venta)) {
+            return response()->json([
+                'message' => 'No se puede editar una venta a Crédito (Deuda) que ya tiene pagos registrados en Cuentas por Pagar.',
+                'code' => 'VENTA_CREDITO_CON_PAGOS',
+            ], 409);
         }
 
         $data = $request->all();
@@ -757,6 +944,19 @@ class VentasController extends Controller
             return response()->json(['message' => 'Venta no encontrada'], 404);
         }
 
+        // Bloqueo: si es Crédito (Deuda) y ya tiene pagos registrados, no permitir eliminación
+        try {
+            if ($this->ventaCreditoTienePagos($venta)) {
+                return response()->json([
+                    'message' => 'No se puede eliminar una venta a Crédito (Deuda) que ya tiene pagos registrados en Cuentas por Cobrar.',
+                    'code' => 'VENTA_CREDITO_CON_PAGOS'
+                ], 409);
+            }
+        } catch (\Throwable $e) {
+            // si falla la comprobación, continuar con la eliminación (pero registramos el warning)
+            try { Log::warning('VentasController@destroy: error comprobando pagos antes de eliminar', ['error' => $e->getMessage(), 'venta_id' => $venta->id]); } catch (\Throwable $__) {}
+        }
+
         DB::beginTransaction();
         try {
             // Guardar usuario que elimina (sin migraciones: en observaciones y/o columna si existe)
@@ -915,268 +1115,23 @@ class VentasController extends Controller
             return response()->json(['message' => 'Error reading venta_metodos_pago', 'error' => $e->getMessage()], 500);
         }
     }
+
+    /**
+     * Endpoint para comprobar si una venta (Credito/Deuda) tiene pagos registrados.
+     * Devuelve { tiene_pagos: bool, motivo: string }
+     */
+    public function tienePagos($id)
+    {
+        try {
+            $venta = Venta::find($id);
+            if (!$venta) return response()->json(['message' => 'Venta no encontrada'], 404);
+
+            $tiene = $this->ventaCreditoTienePagos($venta);
+            $motivo = $tiene ? 'La venta tiene pagos registrados en Cuentas por Cobrar.' : 'No se detectaron pagos para esta venta.';
+            return response()->json(['tiene_pagos' => $tiene, 'motivo' => $motivo]);
+        } catch (\Throwable $e) {
+            Log::error('VentasController@tienePagos error', ['error' => $e->getMessage(), 'venta_id' => $id]);
+            return response()->json(['message' => 'Error comprobando pagos'], 500);
+        }
+    }
 }
-// <?php
-
-// namespace App\Http\Controllers;
-
-// use Illuminate\Http\Request;
-// use Illuminate\Support\Facades\Session;
-// use Illuminate\Support\Facades\Storage;
-// use Illuminate\Support\Facades\DB;
-// use Illuminate\Support\Facades\Log;
-// use App\Models\Venta;
-// use App\Models\VentaDetalle;
-// use Illuminate\Support\Facades\Validator;
-// use Symfony\Component\HttpFoundation\StreamedResponse;
-
-// class VentasController extends Controller
-// {
-//     // Lista ventas desde sesión (mock) con filtros simples
-//     public function index(Request $request)
-//     {
-//         // Leer ventas desde archivo persistente si existe (más fiable en entorno dev)
-//         $path = storage_path('app/mock_ventas.json');
-//         if (file_exists($path)) {
-//             $content = file_get_contents($path);
-//             $ventas = json_decode($content, true) ?: [];
-//         } else {
-//             $ventas = Session::get('mock_ventas', []);
-//         }
-
-//         // Aplicar filtros básicos
-//         if ($request->filled('fecha')) {
-//             $ventas = array_filter($ventas, function ($v) use ($request) {
-//                 return isset($v['fecha']) && $v['fecha'] === $request->get('fecha');
-//             });
-//         }
-
-//         if ($request->filled('sucursal')) {
-//             $ventas = array_filter($ventas, function ($v) use ($request) {
-//                 return isset($v['sucursal']) && $v['sucursal'] === $request->get('sucursal');
-//             });
-//         }
-
-//         if ($request->filled('metodoPago')) {
-//             $mp = $request->get('metodoPago');
-//             $ventas = array_filter($ventas, function ($v) use ($mp) {
-//                 if (!isset($v['metodos_pago'])) return false;
-//                 return stripos(json_encode($v['metodos_pago']), $mp) !== false;
-//             });
-//         }
-
-//         // Reindex
-//         $ventas = array_values($ventas);
-
-//         return response()->json(['data' => $ventas]);
-//     }
-
-//     public function show($id)
-//     {
-//         $ventas = Session::get('mock_ventas', []);
-//         foreach ($ventas as $v) {
-//             if ($v['id'] == $id) {
-//                 return response()->json(['data' => $v]);
-//             }
-//         }
-//         return response()->json(['message' => 'Venta no encontrada'], 404);
-//     }
-
-//     public function store(Request $request)
-//     {
-//         $data = $request->all();
-
-//         // Log payload to help debug why ventas are not being guardadas
-//         Log::info('Venta store payload', $data);
-
-//         $validator = Validator::make($data, [
-//             'fecha' => 'required|date',
-//             'sucursal' => 'required|string',
-//             'items' => 'required|array|min:1',
-//         ]);
-
-//         if ($validator->fails()) {
-//             return response()->json(['message' => 'Datos inválidos', 'errors' => $validator->errors()], 422);
-//         }
-
-//         $ventas = Session::get('mock_ventas', []);
-
-//         $id = time() . rand(100, 999);
-
-//         $subtotal = 0;
-//         foreach ($data['items'] as $it) {
-//             $cantidad = isset($it['cantidad']) ? (float)$it['cantidad'] : 1;
-//             $precio = isset($it['precioUnitario']) ? (float)$it['precioUnitario'] : 0;
-//             $subtotal += $cantidad * $precio;
-//         }
-
-//         $iva = isset($data['iva']) ? (float)$data['iva'] : round($subtotal * 0.19, 2);
-//         $total = isset($data['total']) ? (float)$data['total'] : round($subtotal + $iva, 2);
-
-//         // Intentar persistir en BD (transacción). Si falla, usar el fallback a archivo/sesión.
-//         $ventaSaved = null;
-//         $dbError = null;
-//         DB::beginTransaction();
-//         try {
-//             // Mapear los tipos enviados ('efectivo','transferencia','debito','credito','cheque','online','credito_deuda')
-//             // a los valores del ENUM existentes en la base de datos
-//             $map = [
-//                 'efectivo' => 'Efectivo',
-//                 'transferencia' => 'Transferencia',
-//                 'debito' => 'Tarjeta Debito',
-//                 'credito' => 'Tarjeta Credito',
-//                 'cheque' => 'Cheque',
-//                 'online' => 'Pago Online',
-//                 'credito_deuda' => 'Credito (Deuda)'
-//             ];
-
-//             $primaryTipo = null;
-//             if (!empty($data['metodoPago1']['tipo'])) $primaryTipo = $data['metodoPago1']['tipo'];
-//             if (empty($primaryTipo) && !empty($data['metodoPago2']['tipo'])) $primaryTipo = $data['metodoPago2']['tipo'];
-
-//             $metodoPagoEnum = $map[$primaryTipo] ?? null;
-
-//             $ventaModel = Venta::create([
-//                 'fecha' => $data['fecha'],
-//                 'sucursal_id' => $data['sucursal'] ?? null,
-//                 'sucursal_nombre' => isset($data['sucursal']) && is_string($data['sucursal']) ? $data['sucursal'] : null,
-//                 'cliente_id' => $data['cliente'] ?? null,
-//                 'documentoVenta' => $data['documentoVenta'] ?? null,
-//                 'folioVenta' => $data['folioVenta'] ?? null,
-//                 'subtotal' => $subtotal,
-//                 'iva' => $iva,
-//                 'total' => $total,
-//                 // Guardar valor compatible con ENUM actual para evitar truncamiento
-//                 'metodos_pago' => $metodoPagoEnum,
-//                 // Guardar detalle completo en columna nueva (JSON/Text)
-//                 'metodos_pago_detalle' => [$data['metodoPago1'] ?? [], $data['metodoPago2'] ?? []],
-//                 'observaciones' => $data['observaciones'] ?? null,
-//                 'estado' => $data['estado'] ?? 'REGISTRADA',
-//             ]);
-
-//             foreach ($data['items'] as $it) {
-//                 $cantidad = isset($it['cantidad']) ? (float)$it['cantidad'] : 1;
-//                 $precio = isset($it['precioUnitario']) ? (float)$it['precioUnitario'] : 0;
-//                 $total_linea = round($cantidad * $precio, 2);
-
-//                 VentaDetalle::create([
-//                     'venta_id' => $ventaModel->id,
-//                     'descripcion' => $it['descripcion'] ?? null,
-//                     'cantidad' => $cantidad,
-//                     'precio_unitario' => $precio,
-//                     'total_linea' => $total_linea,
-//                 ]);
-//             }
-
-//             DB::commit();
-//             $ventaSaved = $ventaModel->load('detalles');
-//         } catch (\Exception $e) {
-//             DB::rollBack();
-//             Log::error('Error saving venta to DB', [
-//                 'message' => $e->getMessage(),
-//                 'trace' => $e->getTraceAsString(),
-//                 'payload' => $data,
-//             ]);
-//             $dbError = $e->getMessage();
-//             // fallback: guardar en sesión/archivo
-//             $venta = [
-//                 'id' => $id,
-//                 'fecha' => $data['fecha'],
-//                 'sucursal' => $data['sucursal'],
-//                 'documentoVenta' => $data['documentoVenta'] ?? null,
-//                 'folioVenta' => $data['folioVenta'] ?? null,
-//                 'cliente' => $data['cliente'] ?? null,
-//                 'items' => $data['items'],
-//                 'subtotal' => $subtotal,
-//                 'iva' => $iva,
-//                 'total' => $total,
-//                 'metodos_pago' => [$data['metodoPago1'] ?? [], $data['metodoPago2'] ?? []],
-//                 'observaciones' => $data['observaciones'] ?? null,
-//                 'estado' => $data['estado'] ?? 'REGISTRADA',
-//                 'created_at' => now()->toDateTimeString(),
-//             ];
-
-//             $ventas[] = $venta;
-//             Session::put('mock_ventas', $ventas);
-//             try {
-//                 $path = storage_path('app/mock_ventas.json');
-//                 $existing = [];
-//                 if (file_exists($path)) {
-//                     $existing = json_decode(file_get_contents($path), true) ?: [];
-//                 }
-//                 $existing[] = $venta;
-//                 file_put_contents($path, json_encode($existing, JSON_PRETTY_PRINT));
-//             } catch (\Exception $e2) {
-//                 // ignore
-//             }
-//         }
-
-//         if ($ventaSaved) {
-//             return response()->json(['data' => $ventaSaved, 'saved_in_db' => true], 201);
-//         }
-
-//         return response()->json(['data' => $venta, 'saved_in_db' => false, 'error' => $dbError], 201);
-//     }
-
-//     public function update(Request $request, $id)
-//     {
-//         $ventas = Session::get('mock_ventas', []);
-//         $found = false;
-//         foreach ($ventas as &$v) {
-//             if ($v['id'] == $id) {
-//                 $v = array_merge($v, $request->all());
-//                 $found = true;
-//                 break;
-//             }
-//         }
-//         if (!$found) return response()->json(['message' => 'Venta no encontrada'], 404);
-//         Session::put('mock_ventas', $ventas);
-//         return response()->json(['data' => $v]);
-//     }
-
-//     public function destroy($id)
-//     {
-//         $ventas = Session::get('mock_ventas', []);
-//         $new = [];
-//         $deleted = null;
-//         foreach ($ventas as $v) {
-//             if ($v['id'] == $id) {
-//                 $deleted = $v;
-//                 continue;
-//             }
-//             $new[] = $v;
-//         }
-//         Session::put('mock_ventas', $new);
-//         if (!$deleted) return response()->json(['message' => 'Venta no encontrada'], 404);
-//         return response()->json(['message' => 'Venta eliminada', 'data' => $deleted]);
-//     }
-
-//     public function export(Request $request)
-//     {
-//         $ventas = $this->index($request)->getData()->data;
-
-//         $response = new StreamedResponse(function () use ($ventas) {
-//             $out = fopen('php://output', 'w');
-//             fputcsv($out, ['id', 'fecha', 'sucursal', 'subtotal', 'iva', 'total', 'observaciones']);
-//             foreach ($ventas as $v) {
-//                 fputcsv($out, [
-//                     $v->id ?? $v['id'] ?? '',
-//                     $v->fecha ?? '',
-//                     $v->sucursal ?? '',
-//                     $v->subtotal ?? '',
-//                     $v->iva ?? '',
-//                     $v->total ?? '',
-//                     $v->observaciones ?? '',
-//                 ]);
-//             }
-//             fclose($out);
-//         });
-
-//         $filename = 'ventas_export_' . date('Ymd_His') . '.csv';
-
-//         $response->headers->set('Content-Type', 'text/csv');
-//         $response->headers->set('Content-Disposition', 'attachment; filename="' . $filename . '"');
-
-//         return $response;
-//     }
-// }

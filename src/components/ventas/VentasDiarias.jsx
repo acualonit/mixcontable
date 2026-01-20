@@ -128,36 +128,93 @@ function VentasDiarias({ fecha, sucursal, onBack }) {
   };
 
   const handleDelete = async (v) => {
-    if (!confirm(`¿Eliminar venta #${v.id} (folio: ${v.folioVenta || '-'})? Esta acción no se puede deshacer.`)) return;
     try {
+      // Preguntar al backend si la venta (Crédito/Deuda) tiene pagos registrados
+      if (String(v?.metodos_pago ?? '').toLowerCase().trim() === 'credito (deuda)') {
+        try {
+          const resp = await ventasApi.getVentaTienePagos(v.id);
+          if (resp && resp.tiene_pagos) {
+            alert(resp.motivo || 'No se puede eliminar: la venta tiene pagos realizados.');
+            return;
+          }
+        } catch (err) {
+          // Si falla la consulta, continuar con la comprobación local
+          console.warn('No se pudo comprobar pagos en backend antes de eliminar, se usará verificación local', err);
+        }
+      }
+
+      if (!confirm(`¿Eliminar venta #${v.id} (folio: ${v.folioVenta || '-'})? Esta acción no se puede deshacer.`)) return;
+
       await ventasApi.deleteVenta(v.id);
       setVentas(prev => prev.filter(x => x.id !== v.id));
     } catch (err) {
       console.error('Error eliminando venta', err);
+      // Manejar caso de bloqueo en backend (409)
+      if (err && (err.status === 409 || err.body?.code === 'VENTA_CREDITO_CON_PAGOS')) {
+        const msg = (err.body && err.body.message) ? err.body.message : 'No se puede eliminar: la venta tiene pagos registrados.';
+        alert(msg);
+        return;
+      }
       alert('Error eliminando la venta');
     }
   };
 
-  const handleEditClick = (v) => {
-    // cargar cliente asociado antes de abrir modal para que NuevaVenta lo muestre
-    (async () => {
-      try {
-        let ventaConCliente = { ...v };
-        const clienteId = v.cliente_id ?? v.cliente ?? null;
-        if (clienteId) {
-          try {
-            const cli = await fetchClienteByRut(String(clienteId));
-            if (cli) ventaConCliente.cliente = cli;
-          } catch (e) {
-            console.warn('No se pudo obtener cliente al editar venta:', e.message || e);
-          }
+  const ventaCreditoConPagos = (v) => {
+    try {
+      const mp = String(v?.metodos_pago ?? '').toLowerCase().trim();
+      if (mp !== 'credito (deuda)') return false;
+      const pagado = Number(
+        v?.monto_pagado ??
+        v?.montoPagado ??
+        v?.pagado ??
+        v?.total_pagado ??
+        v?.abonado ??
+        v?.abono ??
+        0
+      ) || 0;
+      return pagado > 0;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleEditClick = async (v) => {
+    // Primero preguntar al backend si la venta (Crédito/Deuda) tiene pagos registrados
+    try {
+      if (String(v?.metodos_pago ?? '').toLowerCase().trim() === 'credito (deuda)') {
+        const resp = await ventasApi.getVentaTienePagos(v.id);
+        if (resp && resp.tiene_pagos) {
+          alert(resp.motivo || 'No se puede editar: la venta tiene pagos realizados.');
+          return;
         }
-        setVentaEnEdicion(ventaConCliente);
-      } catch (err) {
-        console.error('Error preparando venta para edición', err);
-        setVentaEnEdicion(v);
       }
-    })();
+    } catch (err) {
+      // Si falla la consulta, no bloquear por defecto; mostrar aviso y permitir seguir con la verificación local
+      console.warn('No se pudo comprobar pagos en backend, se usará verificación local', err);
+    }
+
+    // fallback local y carga de cliente antes de abrir modal para que NuevaVenta lo muestre
+    try {
+      let ventaConCliente = { ...v };
+      const clienteId = v.cliente_id ?? v.cliente ?? null;
+      if (clienteId) {
+        try {
+          const cli = await fetchClienteByRut(String(clienteId));
+          if (cli) ventaConCliente.cliente = cli;
+        } catch (e) {
+          console.warn('No se pudo obtener cliente al editar venta:', e.message || e);
+        }
+      }
+      // última comprobación local por si existe campo pagado en la fila
+      if (ventaCreditoConPagos(ventaConCliente)) {
+        alert('No se puede editar una venta a Crédito (Deuda) que ya tiene pagos registrados.');
+        return;
+      }
+      setVentaEnEdicion(ventaConCliente);
+    } catch (err) {
+      console.error('Error preparando venta para edición', err);
+      setVentaEnEdicion(v);
+    }
   };
 
   const handleSaveEdicion = async (payload) => {
@@ -169,6 +226,11 @@ function VentasDiarias({ fecha, sucursal, onBack }) {
       setVentaEnEdicion(null);
     } catch (err) {
       console.error('Error actualizando venta', err);
+      if (err && (err.status === 409 || err.body?.code === 'VENTA_CREDITO_CON_PAGOS')) {
+        const msg = (err.body && err.body.message) ? err.body.message : 'No se puede editar: la venta tiene pagos registrados.';
+        alert(msg);
+        return;
+      }
       alert('Error al guardar cambios de la venta');
     }
   };
@@ -272,6 +334,8 @@ function VentasDiarias({ fecha, sucursal, onBack }) {
                       amounts.otros += total;
                     }
 
+                    const disableEdit = ventaCreditoConPagos(v);
+
                     return (
                       <tr key={v.id}>
                         <td>{(v.fecha || '').slice(0,10)}</td>
@@ -292,10 +356,20 @@ function VentasDiarias({ fecha, sucursal, onBack }) {
                             <button className="btn btn-sm btn-primary" onClick={() => setSelectedVenta(v)}>
                               <i className="bi bi-eye"></i>
                             </button>
-                            <button className="btn btn-sm btn-warning" onClick={() => handleEditClick(v)} title="Editar">
+                            <button
+                              className="btn btn-sm btn-warning"
+                              onClick={() => handleEditClick(v)}
+                              title={disableEdit ? 'No editable: ya tiene pagos en Cuentas por Pagar' : 'Editar'}
+                              disabled={disableEdit}
+                            >
                               <i className="bi bi-pencil-square"></i>
                             </button>
-                            <button className="btn btn-sm btn-danger" onClick={() => handleDelete(v)} title="Eliminar">
+                            <button
+                              className="btn btn-sm btn-danger"
+                              onClick={() => handleDelete(v)}
+                              title={disableEdit ? 'No se puede eliminar: la venta tiene pagos realizados' : 'Eliminar'}
+                              disabled={disableEdit}
+                            >
                               <i className="bi bi-trash"></i>
                             </button>
                           </div>

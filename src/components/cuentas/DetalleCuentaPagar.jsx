@@ -1,6 +1,48 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { getPagosPorVenta, getPagosPorCuenta } from '../../utils/ventasApi';
 
 function DetalleCuentaPagar({ cuenta, onClose }) {
+  const [detalle, setDetalle] = useState(cuenta);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let mounted = true;
+    const cargarPagos = async () => {
+      setCargando(true); setError('');
+      try {
+        let res = null;
+        // Si la cuenta incluye ventaOriginal, usar pagos por venta
+        if (cuenta.ventaOriginal && cuenta.ventaOriginal.id) {
+          res = await getPagosPorVenta(cuenta.ventaOriginal.id);
+        } else if (cuenta.cuentaId) {
+          res = await getPagosPorCuenta(cuenta.cuentaId);
+        }
+
+        if (res && mounted) {
+          const pagos = (res.pagos || []).map(p => ({
+            fecha: p.fecha_pago,
+            monto: p.monto || p.monto_pagado || 0,
+            metodoPago: p.metodo_pago || p.metodo || null,
+            comprobante: p.comprobante || p.referencia || null,
+            usuario: p.usuario_id || null,
+          }));
+
+          setDetalle(prev => ({ ...prev, historialPagos: pagos, montoPagado: res.monto_total || pagos.reduce((s, x) => s + (x.monto || 0), 0) }));
+        }
+      } catch (e) {
+        if (mounted) setError(e?.message || 'Error al cargar pagos');
+      } finally {
+        if (mounted) setCargando(false);
+      }
+    };
+
+    cargarPagos();
+    return () => { mounted = false; };
+  }, [cuenta]);
+
+  const c = detalle || {};
+
   return (
     <div className="modal d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
       <div className="modal-dialog modal-lg">
@@ -10,6 +52,8 @@ function DetalleCuentaPagar({ cuenta, onClose }) {
             <button type="button" className="btn-close" onClick={onClose}></button>
           </div>
           <div className="modal-body">
+            {cargando && <div className="alert alert-info">Cargando pagos...</div>}
+            {error && <div className="alert alert-danger">{error}</div>}
             <div className="row mb-4">
               <div className="col-md-6">
                 <h6>Información del Proveedor</h6>
@@ -17,11 +61,11 @@ function DetalleCuentaPagar({ cuenta, onClose }) {
                   <tbody>
                     <tr>
                       <th>Proveedor:</th>
-                      <td>{cuenta.proveedor}</td>
+                      <td>{c.proveedor}</td>
                     </tr>
                     <tr>
                       <th>RUT:</th>
-                      <td>{cuenta.rut}</td>
+                      <td>{c.rut}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -32,48 +76,48 @@ function DetalleCuentaPagar({ cuenta, onClose }) {
                   <tbody>
                     <tr>
                       <th>Origen:</th>
-                      <td>{cuenta.origen}</td>
+                      <td>{c.origen}</td>
                     </tr>
                     <tr>
                       <th>Documento:</th>
-                      <td>{cuenta.documento}</td>
+                      <td>{c.documento}</td>
                     </tr>
                     <tr>
                       <th>Fecha Emisión:</th>
-                      <td>{cuenta.fechaEmision}</td>
+                      <td>{c.fechaEmision}</td>
                     </tr>
                     <tr>
                       <th>Fecha Vencimiento:</th>
-                      <td>{cuenta.fechaVencimiento}</td>
+                      <td>{c.fechaVencimiento}</td>
                     </tr>
                     <tr>
                       <th>Días Mora:</th>
-                      <td className={cuenta.diasMora > 0 ? 'text-danger' : ''}>
-                        {cuenta.diasMora > 0 ? `${cuenta.diasMora} días` : '-'}
+                      <td className={c.diasMora > 0 ? 'text-danger' : ''}>
+                        {c.diasMora > 0 ? `${c.diasMora} días` : '-'}
                       </td>
                     </tr>
                     <tr>
                       <th>Monto Total:</th>
-                      <td className="fw-bold">${cuenta.montoTotal?.toLocaleString()}</td>
+                      <td className="fw-bold">${(c.montoTotal || 0).toLocaleString()}</td>
                     </tr>
                     <tr>
                       <th>Monto Pagado:</th>
-                      <td className="text-success">${cuenta.montoPagado?.toLocaleString()}</td>
+                      <td className="text-success">${(c.montoPagado || 0).toLocaleString()}</td>
                     </tr>
                     <tr>
                       <th>Saldo Pendiente:</th>
-                      <td className="text-danger">${(cuenta.montoTotal - cuenta.montoPagado)?.toLocaleString()}</td>
+                      <td className="text-danger">${((c.montoTotal || 0) - (c.montoPagado || 0)).toLocaleString()}</td>
                     </tr>
                     <tr>
                       <th>Estado:</th>
                       <td>
                         <span className={`badge bg-${
-                          cuenta.diasMora > 0 ? 'danger' : 
-                          cuenta.montoPagado === cuenta.montoTotal ? 'success' : 
+                          c.diasMora > 0 ? 'danger' : 
+                          (c.montoPagado || 0) === (c.montoTotal || 0) ? 'success' : 
                           'warning'
                         }`}>
-                          {cuenta.diasMora > 0 ? 'Vencida' : 
-                           cuenta.montoPagado === cuenta.montoTotal ? 'Pagada' : 
+                          {c.diasMora > 0 ? 'Vencida' : 
+                           (c.montoPagado || 0) === (c.montoTotal || 0) ? 'Pagada' : 
                            'Pendiente'}
                         </span>
                       </td>
@@ -97,16 +141,16 @@ function DetalleCuentaPagar({ cuenta, onClose }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {cuenta.historialPagos?.map((pago, index) => (
+                    {c.historialPagos?.map((pago, index) => (
                       <tr key={index}>
                         <td>{pago.fecha}</td>
-                        <td>${pago.monto.toLocaleString()}</td>
+                        <td>${(pago.monto || 0).toLocaleString()}</td>
                         <td>{pago.metodoPago}</td>
                         <td>{pago.comprobante}</td>
                         <td>{pago.usuario}</td>
                       </tr>
                     ))}
-                    {(!cuenta.historialPagos || cuenta.historialPagos.length === 0) && (
+                    {(!c.historialPagos || c.historialPagos.length === 0) && (
                       <tr>
                         <td colSpan="5" className="text-center">No hay pagos registrados</td>
                       </tr>
@@ -116,10 +160,10 @@ function DetalleCuentaPagar({ cuenta, onClose }) {
               </div>
             </div>
 
-            {cuenta.observaciones && (
+            {c.observaciones && (
               <div className="mb-4">
                 <h6>Observaciones</h6>
-                <p>{cuenta.observaciones}</p>
+                <p>{c.observaciones}</p>
               </div>
             )}
           </div>

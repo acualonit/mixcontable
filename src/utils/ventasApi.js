@@ -49,6 +49,8 @@ export const listVentasEliminadas = async (params = {}) => {
 
 export const getVenta = (id) => fetchJson(`/ventas/${id}`);
 
+export const getVentaTienePagos = (id) => fetchJson(`/ventas/${id}/tiene-pagos`);
+
 export const createVenta = (payload) => fetchJson('/ventas', { method: 'POST', body: payload });
 
 export const updateVenta = (id, payload) => fetchJson(`/ventas/${id}`, { method: 'PUT', body: payload });
@@ -79,6 +81,15 @@ export const exportVentas = async (params = {}) => {
   window.URL.revokeObjectURL(urlBlob);
 };
 
+export const getPagosPorVenta = (id) => fetchJson(`/ventas/${id}/pagos`);
+
+export const getPagosPorCuenta = (id) => fetchJson(`/cuentas-cobrar/${id}/pagos`);
+
+export const getHistorialPagos = (params = {}) => {
+  const query = new URLSearchParams(params).toString();
+  return fetchJson(`/cuentas-cobrar/pagos${query ? `?${query}` : ''}`);
+};
+
 export default {
   listVentas,
   getVenta,
@@ -87,4 +98,8 @@ export default {
   deleteVenta,
   exportVentas,
   listVentasEliminadas,
+  getVentaTienePagos,
+  getPagosPorVenta,
+  getPagosPorCuenta,
+  getHistorialPagos,
 };

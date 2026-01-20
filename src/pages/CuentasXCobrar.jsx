@@ -214,15 +214,24 @@ function CuentasXCobrar() {
         try {
           const venta = await ventasApi.getVenta(ventaId);
 
+          // Si la venta no trae pagos adjuntos, llamar al endpoint de CxC para obtenerlos
+          let pagosRes = null;
+          if (!venta?.historialPagos && !venta?.historial_pagos) {
+            try {
+              pagosRes = await ventasApi.getPagosPorVenta(ventaId);
+            } catch (err) {
+              // no abortar: puede que no existan pagos o falló la llamada
+              pagosRes = null;
+            }
+          }
+
+          const pagosList = pagosRes?.pagos ?? (venta?.historialPagos ?? venta?.historial_pagos ?? []);
+          const montoPagadoFromPagos = pagamentosToMonto(pagosList) || (venta.monto_pagado ?? venta.montoPagado ?? venta.pagado ?? 0);
+
+          // intentar obtener id de cuenta_cobrar desde los pagos (primer pago)
+          const cuentaIdDesdePagos = (pagosRes?.pagos && pagosRes.pagos.length > 0) ? (pagosRes.pagos[0].cuenta_cobrar_id ?? pagosRes.pagos[0].raw['cuenta_cobrar_id'] ?? null) : null;
+
           const numeroDocumento = venta.folioVenta ?? venta.folio_venta ?? venta.folio ?? venta.documentoVenta ?? venta.documento ?? cuenta.numeroDocumento ?? '';
-          const tipoDocumento = venta.documentoVenta ?? venta.documento_venta ?? venta.tipo_documento ?? venta.tipoDocumento ?? cuenta.tipoDocumento ?? '';
-          const contacto = venta.cliente?.contacto_principal ?? venta.contacto_principal ?? venta.cliente?.contacto ?? venta.cliente?.contact_name ?? venta.cliente?.contacto_nombre ?? venta.contacto ?? cuenta.contacto ?? '';
-          const telefono = venta.cliente?.telefono_principal ?? venta.telefono_principal ?? venta.cliente?.telefono ?? venta.telefono ?? cuenta.telefono ?? undefined;
-          // Evitar mezclar '??' con '||' sin paréntesis: primero evaluar nullish, luego fallback a 0
-          const montoTotal = Number((venta.total ?? venta.monto ?? cuenta.montoTotal) || 0);
-          const montoPagado = Number((venta.monto_pagado ?? venta.montoPagado ?? venta.pagado ?? cuenta.montoPagado) || 0);
-          const fechaEmision = venta.fecha ?? cuenta.fechaEmision;
-          const fechaVencimiento = venta.fecha_final ?? venta.fecha_vencimiento ?? cuenta.fechaVencimiento;
 
           const cuentaEnriquecida = {
             ...cuenta,
@@ -234,8 +243,10 @@ function CuentasXCobrar() {
             montoPagado,
             fechaEmision,
             fechaVencimiento,
-            historialPagos: venta.historialPagos ?? venta.historial_pagos ?? cuenta.historialPagos ?? [],
-            observaciones: venta.observaciones ?? venta.observacion ?? cuenta.observaciones ?? ''
+            historialPagos: pagosList || [],
+            observaciones: venta.observaciones ?? venta.observacion ?? cuenta.observaciones ?? '',
+            cuentaId: cuentaIdDesdePagos || null,
+            cuenta_cobrar_id: cuentaIdDesdePagos || null,
           };
 
           setCuentaSeleccionada(cuentaEnriquecida);
@@ -247,6 +258,26 @@ function CuentasXCobrar() {
         }
       }
 
+      // Si no es venta, pero la cuenta tiene id, intentar obtener pagos por cuenta
+      if (cuenta && cuenta.id) {
+        try {
+          const pagosRes = await ventasApi.getPagosPorCuenta(cuenta.id);
+          const pagosList = pagosRes?.pagos ?? [];
+          const montoPagado = pagamentosToMonto(pagosList) || (cuenta.montoPagado ?? cuenta.monto_pagado ?? cuenta.pagado ?? 0);
+
+          const cuentaEnriquecida = {
+            ...cuenta,
+            historialPagos: pagosList,
+            montoPagado
+          };
+          setCuentaSeleccionada(cuentaEnriquecida);
+          setShowDetalle(true);
+          return;
+        } catch (err) {
+          console.warn('No se pudo obtener pagos por cuenta:', err);
+        }
+      }
+
       setCuentaSeleccionada(cuenta);
       setShowDetalle(true);
     } catch (error) {
@@ -254,6 +285,14 @@ function CuentasXCobrar() {
       setCuentaSeleccionada(cuenta);
       setShowDetalle(true);
     }
+  };
+
+  // Helper: sumar montos desde la estructura de pagos del backend
+  const pagamentosToMonto = (pagos) => {
+    try {
+      if (!Array.isArray(pagos)) return 0;
+      return pagos.reduce((s, p) => s + (Number(p.monto ?? p.monto_pagado ?? p.valor ?? p.importe ?? 0) || 0), 0);
+    } catch (e) { return 0; }
   };
 
   const handleRegistrarPago = (cuenta) => {
@@ -273,7 +312,9 @@ function CuentasXCobrar() {
         monto: monto,
         metodo_pago: pago.metodoPago?.tipo ?? (pago.metodoPago || ''),
         comprobante: pago.metodoPago?.numeroVoucher ?? pago.metodoPago?.numeroCheque ?? pago.comprobante ?? null,
-        cuenta_bancaria_id: pago.metodoPago?.cuenta_bancaria_id ?? null,
+        // compat: algunos modales envían cuenta_bancaria_id; otros enviarán banco_id
+        cuenta_bancaria_id: pago.metodoPago?.cuenta_bancaria_id ?? pago.cuenta_bancaria_id ?? null,
+        banco_id: pago.metodoPago?.banco_id ?? pago.banco_id ?? (pago.metodoPago?.cuenta_bancaria_id ?? pago.cuenta_bancaria_id ?? null),
         observaciones: pago.observaciones ?? null
       };
 

@@ -12,6 +12,8 @@ use App\Http\Controllers\UserManagementController;
 use App\Http\Controllers\EfectivoController;
 use App\Http\Controllers\ComprasController;
 use App\Http\Controllers\CajaEfectivoController;
+use App\Http\Controllers\CuentasCobrarController;
+use App\Http\Controllers\VentasController;
 use App\Models\User;
 
 /*
@@ -114,6 +116,7 @@ Route::middleware('session')->group(function () {
         Route::get('/ventas/export', [\App\Http\Controllers\VentasController::class, 'export']);
         Route::get('/ventas/eliminadas', [\App\Http\Controllers\VentasController::class, 'eliminadas']);
         Route::get('/ventas/{venta}', [\App\Http\Controllers\VentasController::class, 'show']);
+        Route::get('/ventas/{venta}/tiene-pagos', [\App\Http\Controllers\VentasController::class, 'tienePagos']);
         Route::post('/ventas', [\App\Http\Controllers\VentasController::class, 'store']);
         Route::put('/ventas/{venta}', [\App\Http\Controllers\VentasController::class, 'update']);
         Route::delete('/ventas/{venta}', [\App\Http\Controllers\VentasController::class, 'destroy']);
@@ -122,6 +125,9 @@ Route::middleware('session')->group(function () {
 
         // Cuentas por Cobrar - pagos
         Route::post('/cuentas-cobrar/pagos', [\App\Http\Controllers\CuentasCobrarController::class, 'storePago']);
+        Route::get('/cuentas-cobrar/{cuenta}/pagos', [\App\Http\Controllers\CuentasCobrarController::class, 'pagosPorCuenta']);
+        Route::get('/ventas/{venta}/pagos', [\App\Http\Controllers\CuentasCobrarController::class, 'pagosPorVenta']);
+        Route::get('/cuentas-cobrar/pagos', [\App\Http\Controllers\CuentasCobrarController::class, 'pagosHistorico']);
 
         // Efectivo
         Route::get('/efectivo/saldo', [EfectivoController::class, 'saldo']);
