@@ -6,6 +6,7 @@ import VentasEliminadas from '../components/ventas/VentasEliminadas';
 import VentaMasiva from '../components/ventas/VentaMasiva';
 import ventasApi from '../utils/ventasApi';
 import { fetchEmpresas, fetchSucursales } from '../utils/configApi';
+import { exportToExcel } from '../utils/exportUtils';
 
 function Ventas() {
   const [filtros, setFiltros] = useState({
@@ -89,12 +90,36 @@ function Ventas() {
     }));
   };
 
-  const handleExportExcel = () => {
-    ventasApi.exportVentas(filtros)
-      .catch(err => {
-        console.error(err);
-        alert('Error al exportar');
-      });
+  const handleExportExcel = async () => {
+    try {
+      // Reutiliza el flujo del backend (mismos params), pero exporta en frontend
+      // para aplicar el estilo "Banco" específicamente en el módulo de Ventas.
+      const params = {};
+      if (filtros.fecha) params.fecha = filtros.fecha;
+      if (filtros.sucursal) params.sucursal = filtros.sucursal;
+      if (filtros.metodoPago) {
+        params.metodoPago = filtros.metodoPago;
+        params.metodos_pago = filtros.metodoPago;
+      }
+
+      const res = await ventasApi.listVentas(params);
+      const rows = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
+
+      const dataToExport = rows.map(v => ({
+        Fecha: formatDate(v.fecha),
+        Sucursal: v.sucursal_nombre ?? v.sucursal ?? '',
+        Cliente: v.cliente_nombre ?? v.cliente ?? '',
+        RUT: v.cliente_rut ?? v.rut ?? '',
+        'Método de Pago': v.metodos_pago ?? v.metodoPago ?? '',
+        Total: Number(v.total) || 0,
+        Observación: v.observacion ?? v.observaciones ?? '',
+      }));
+
+      exportToExcel(dataToExport, 'Ventas', { mode: 'banco' });
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || 'Error al exportar');
+    }
   };
 
   const handleBuscar = () => {

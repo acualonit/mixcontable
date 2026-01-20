@@ -67,24 +67,32 @@ function CuentasCobrarEliminadas({ onBack }) {
       const saldo = Math.max(0, montoTotal - montoPagado);
 
       const clienteObj = typeof v.cliente === 'object' && v.cliente ? v.cliente : null;
-      const cliente = typeof v.cliente === 'string'
-        ? v.cliente
-        : (
-            clienteObj?.nombre ||
-            clienteObj?.razon_social ||
-            clienteObj?.name ||
-            v.cliente_nombre ||
-            v.razon_social ||
-            v.nombre_cliente ||
-            ''
-          );
 
-      const rut =
-        clienteObj?.rut ||
+      // Priorizar campos normalizados que trae el backend
+      const cliente = (
+        v.cliente_nombre ||
+        v.nombre_cliente ||
+        v.razon_social ||
+        v.cliente_texto ||
+        (typeof v.cliente === 'string' ? v.cliente : '') ||
+        clienteObj?.nombre ||
+        clienteObj?.razon_social ||
+        clienteObj?.name ||
+        clienteObj?.cliente ||
+        ''
+      );
+
+      const rut = (
         v.cliente_rut ||
-        v.rut ||
         v.rut_cliente ||
-        '';
+        v.rut ||
+        v.dni ||
+        v.documento ||
+        clienteObj?.rut ||
+        clienteObj?.rut_cliente ||
+        clienteObj?.dni ||
+        ''
+      );
 
       const docTipo = v.documentoVenta || v.documento_venta || v.tipo_documento || v.tipoDocumento || v.documento || '';
       const docNum = v.folioVenta || v.folio_venta || v.folio || v.numero || v.numero_documento || v.nro_documento || '';

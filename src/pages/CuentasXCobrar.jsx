@@ -56,6 +56,14 @@ function CuentasXCobrar() {
     return `${dd}/${mm}/${yyyy}`;
   };
 
+  // Helper: sumar montos desde la estructura de pagos del backend
+  const pagamentosToMonto = (pagos) => {
+    try {
+      if (!Array.isArray(pagos)) return 0;
+      return pagos.reduce((s, p) => s + (Number(p.monto ?? p.monto_pagado ?? p.valor ?? p.importe ?? 0) || 0), 0);
+    } catch (e) { return 0; }
+  };
+
   // Cargar ventas con método Crédito (Deuda) para mostrarlas como cuentas por cobrar
   React.useEffect(() => {
     let mounted = true;
@@ -63,8 +71,26 @@ function CuentasXCobrar() {
       try {
         const res = await ventasApi.listVentas({ metodoPago: 'Credito (Deuda)' });
         const list = Array.isArray(res) ? res : (res?.data ?? []);
+        const rawList = list || [];
+
+        // Importante: precargar pagos por venta para reflejar 'Monto Pagado' real en la grilla
+        const enriched = await Promise.all(
+          rawList.map(async (v) => {
+            try {
+              const ventaId = v?.id;
+              if (!ventaId) return v;
+              const pagosRes = await ventasApi.getPagosPorVenta(ventaId);
+              const pagosList = pagosRes?.pagos ?? [];
+              const montoPagado = pagamentosToMonto(pagosList);
+              return { ...v, monto_pagado: montoPagado, montoPagado, pagado: montoPagado, historialPagos: pagosList, historial_pagos: pagosList };
+            } catch {
+              return v;
+            }
+          })
+        );
+
         if (!mounted) return;
-        setVentasCredito(list || []);
+        setVentasCredito(enriched);
       } catch (err) {
         console.error('Error cargando ventas a crédito:', err);
       }
@@ -226,23 +252,24 @@ function CuentasXCobrar() {
           }
 
           const pagosList = pagosRes?.pagos ?? (venta?.historialPagos ?? venta?.historial_pagos ?? []);
-          const montoPagadoFromPagos = pagamentosToMonto(pagosList) || (venta.monto_pagado ?? venta.montoPagado ?? venta.pagado ?? 0);
+
+          // IMPORTANTE: NO usar `||` porque 0 es un valor válido.
+          // Si hay pagos, usar suma; si no hay pagos, usar el campo monto_pagado de la venta.
+          const montoPagadoFromPagos = pagamentosToMonto(pagosList);
+          const montoPagadoFallback = (venta.monto_pagado ?? venta.montoPagado ?? venta.pagado ?? 0);
+          const montoPagado = (Array.isArray(pagosList) && pagosList.length > 0) ? montoPagadoFromPagos : montoPagadoFallback;
 
           // intentar obtener id de cuenta_cobrar desde los pagos (primer pago)
-          const cuentaIdDesdePagos = (pagosRes?.pagos && pagosRes.pagos.length > 0) ? (pagosRes.pagos[0].cuenta_cobrar_id ?? pagosRes.pagos[0].raw['cuenta_cobrar_id'] ?? null) : null;
+          const cuentaIdDesdePagos = (pagosRes?.pagos && pagosRes.pagos.length > 0)
+            ? (pagosRes.pagos[0].cuenta_cobrar_id ?? pagosRes.pagos[0].raw?.cuenta_cobrar_id ?? null)
+            : null;
 
           const numeroDocumento = venta.folioVenta ?? venta.folio_venta ?? venta.folio ?? venta.documentoVenta ?? venta.documento ?? cuenta.numeroDocumento ?? '';
 
           const cuentaEnriquecida = {
             ...cuenta,
             numeroDocumento,
-            tipoDocumento,
-            contacto,
-            telefono,
-            montoTotal,
             montoPagado,
-            fechaEmision,
-            fechaVencimiento,
             historialPagos: pagosList || [],
             observaciones: venta.observaciones ?? venta.observacion ?? cuenta.observaciones ?? '',
             cuentaId: cuentaIdDesdePagos || null,
@@ -263,7 +290,10 @@ function CuentasXCobrar() {
         try {
           const pagosRes = await ventasApi.getPagosPorCuenta(cuenta.id);
           const pagosList = pagosRes?.pagos ?? [];
-          const montoPagado = pagamentosToMonto(pagosList) || (cuenta.montoPagado ?? cuenta.monto_pagado ?? cuenta.pagado ?? 0);
+
+          const montoPagadoFromPagos = pagamentosToMonto(pagosList);
+          const montoPagadoFallback = (cuenta.montoPagado ?? cuenta.monto_pagado ?? cuenta.pagado ?? 0);
+          const montoPagado = (Array.isArray(pagosList) && pagosList.length > 0) ? montoPagadoFromPagos : montoPagadoFallback;
 
           const cuentaEnriquecida = {
             ...cuenta,
@@ -285,14 +315,6 @@ function CuentasXCobrar() {
       setCuentaSeleccionada(cuenta);
       setShowDetalle(true);
     }
-  };
-
-  // Helper: sumar montos desde la estructura de pagos del backend
-  const pagamentosToMonto = (pagos) => {
-    try {
-      if (!Array.isArray(pagos)) return 0;
-      return pagos.reduce((s, p) => s + (Number(p.monto ?? p.monto_pagado ?? p.valor ?? p.importe ?? 0) || 0), 0);
-    } catch (e) { return 0; }
   };
 
   const handleRegistrarPago = (cuenta) => {

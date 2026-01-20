@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import ventasApi from '../../utils/ventasApi';
 import { fetchClienteByRut } from '../../utils/configApi';
+import { exportToExcel } from '../../utils/exportUtils';
 import DetalleVenta from './DetalleVenta';
 import NuevaVenta from './NuevaVenta';
 
@@ -120,11 +121,30 @@ function VentasDiarias({ fecha, sucursal, onBack }) {
 
   const totales = calcularTotales();
 
-  const handleExport = () => {
-    ventasApi.exportVentas({ fecha: normFecha(fecha), ...(sucursal ? { sucursal } : {}) }).catch(err => {
+  const handleExport = async () => {
+    try {
+      // Export en frontend para poder aplicar estilo "Banco" al Excel de Ventas del día
+      const f = normFecha(fecha);
+      const res = await ventasApi.listVentas({ fecha: f, ...(sucursal ? { sucursal } : {}) });
+      const list = Array.isArray(res) ? res : (res?.data ?? []);
+
+      const dataToExport = (list || []).map(v => ({
+        Fecha: (v.fecha || '').toString().slice(0, 10),
+        Sucursal: v.sucursal_nombre ?? v.sucursal ?? '',
+        Cliente: v.cliente_nombre ?? (typeof v.cliente === 'string' ? v.cliente : (v.cliente?.nombre ?? v.cliente?.razon_social ?? '')),
+        RUT: v.cliente_rut ?? v.rut ?? v.rut_cliente ?? (v.cliente?.rut ?? v.cliente?.rut_cliente ?? ''),
+        'Método de Pago': v.metodos_pago ?? v.metodoPago ?? '',
+        Subtotal: Number(v.subtotal) || 0,
+        IVA: Number(v.iva) || 0,
+        Total: Number(v.total) || 0,
+        Observación: v.observacion ?? v.observaciones ?? '',
+      }));
+
+      exportToExcel(dataToExport, `Ventas_Dia_${f || ''}`, { mode: 'banco' });
+    } catch (err) {
       console.error('Error exportando', err);
       alert('Error al exportar');
-    });
+    }
   };
 
   const handleDelete = async (v) => {

@@ -429,13 +429,25 @@ class CuentasCobrarController extends Controller
                     foreach ($metodosBanco as $m) { if (strpos($mp, $m) !== false) { $isBanco = true; break; } }
 
                     if ($isBanco) {
-                        // Determinar cuenta bancaria destino: preferir campo explícito enviado por frontend
-                        $cuentaBancoId = $data['cuenta_bancaria_id'] ?? $data['cuenta_id_banco'] ?? $data['cuentaId'] ?? $data['cuenta_id'] ?? null;
-                        if (!$cuentaBancoId) {
-                            $cuentaBancoId = DB::table('cuentas_bancarias')->value('id');
+                        // USAR LA MISMA CUENTA/BANCO QUE SE GUARDÓ EN EL PAGO (CXC)
+                        // prioridad: banco_id resuelto -> cuenta_bancaria_id del request -> cuenta_bancaria_id de la cuenta_cobrar
+                        $cuentaBancoId = null;
+                        if (!empty($bancoIdResolved)) {
+                            $cuentaBancoId = (int)$bancoIdResolved;
+                        } elseif (!empty($data['cuenta_bancaria_id'])) {
+                            $cuentaBancoId = (int)$data['cuenta_bancaria_id'];
+                        } elseif (!empty($cuenta->cuenta_bancaria_id)) {
+                            $cuentaBancoId = (int)$cuenta->cuenta_bancaria_id;
                         }
 
-                        if ($cuentaBancoId) {
+                        // compatibilidad antigua: evitar interpretar cuenta_id/cuentaId (son ids de CxC, no de banco)
+
+                        if (!$cuentaBancoId && \Schema::hasTable('cuentas_bancarias')) {
+                            // último recurso: si realmente no hay nada, tomar la primera cuenta bancaria
+                            $cuentaBancoId = (int) (DB::table('cuentas_bancarias')->value('id') ?? 0);
+                        }
+
+                        if (!empty($cuentaBancoId)) {
                             $cols = \Schema::getColumnListing('movimientos_banco');
                             $insert = [];
 
@@ -450,6 +462,12 @@ class CuentasCobrarController extends Controller
                                 $categoriaCandidate = 'Transferencia';
                             }
 
+                            // agregar tag en observaciones para poder rastrear la venta/cuenta
+                            $obsTag = 'CXC_ID:' . $cuentaId;
+                            if (!empty($ventaIdTmp)) $obsTag .= ' VENTA_ID:' . $ventaIdTmp;
+                            $obsFinal = trim((string)($data['observaciones'] ?? ''));
+                            $obsFinal = $obsFinal ? ($obsFinal . ' | ' . $obsTag) : $obsTag;
+
                             // Construir el base sin asegurar 'categoria' aún
                             $base = [
                                 'cuenta_id' => $cuentaBancoId,
@@ -459,7 +477,7 @@ class CuentasCobrarController extends Controller
                                 'descripcion' => 'Cobro cuenta por cobrar #' . $cuentaId,
                                 'tipo_movimiento' => 'INGRESO',
                                 'referencia' => $data['comprobante'] ?? null,
-                                'observaciones' => $data['observaciones'] ?? null,
+                                'observaciones' => $obsFinal,
                                 'created_at' => now(),
                                 'updated_at' => now(),
                             ];
@@ -475,8 +493,6 @@ class CuentasCobrarController extends Controller
                                         $found = in_array($categoriaCandidate, $allowed, true) || in_array(strtolower($categoriaCandidate), array_map('strtolower', $allowed), true);
                                         if ($found) {
                                             $base['categoria'] = $categoriaCandidate;
-                                        } else {
-                                            // omit categoria to avoid SQL warnings; DB default will apply
                                         }
                                     }
                                 }

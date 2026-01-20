@@ -93,6 +93,44 @@ class VentasController extends Controller
         }
 
         $ventas = $q->paginate($perPage);
+
+        // Normalizar cliente_nombre / cliente_rut para el frontend (grillas/export)
+        try {
+            $ventas->getCollection()->transform(function ($v) {
+                try {
+                    if (empty($v->cliente_nombre)) {
+                        $v->cliente_nombre = $v->cliente_nombre
+                            ?? ($v->cliente->nombre ?? null)
+                            ?? ($v->cliente->razon_social ?? null)
+                            ?? ($v->cliente->name ?? null)
+                            ?? (is_string($v->cliente) ? $v->cliente : null)
+                            ?? ($v->cliente_texto ?? null)
+                            ?? ($v->razon_social ?? null)
+                            ?? ($v->nombre_cliente ?? null);
+                    }
+
+                    if (empty($v->cliente_rut)) {
+                        $v->cliente_rut = $v->cliente_rut
+                            ?? ($v->cliente->rut ?? null)
+                            ?? ($v->cliente->rut_cliente ?? null)
+                            ?? ($v->cliente->dni ?? null)
+                            ?? ($v->rut ?? null)
+                            ?? ($v->rut_cliente ?? null);
+                    }
+
+                    // compatibilidad: exponer también como 'cliente' si el frontend lo intenta leer como string
+                    if ((empty($v->cliente) || is_object($v->cliente)) && !empty($v->cliente_nombre)) {
+                        $v->cliente = $v->cliente_nombre;
+                    }
+                } catch (\Throwable $e) {
+                    // ignore
+                }
+                return $v;
+            });
+        } catch (\Throwable $e) {
+            // ignore
+        }
+
         return response()->json($ventas);
     }
 
