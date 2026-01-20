@@ -15,6 +15,7 @@ use App\Http\Controllers\CajaEfectivoController;
 use App\Http\Controllers\CuentasCobrarController;
 use App\Http\Controllers\VentasController;
 use App\Models\User;
+use App\Http\Controllers\ChequeController;
 
 /*
 |--------------------------------------------------------------------------
@@ -164,5 +165,14 @@ Route::middleware('session')->group(function () {
         Route::post('/banco/movimientos', [\App\Http\Controllers\BancoController::class, 'storeMovimiento']);
         Route::put('/banco/movimientos/{id}', [\App\Http\Controllers\BancoController::class, 'updateMovimiento']);
         Route::delete('/banco/movimientos/{id}', [\App\Http\Controllers\BancoController::class, 'deleteMovimiento']);
+
+        // Cheques
+        Route::get('/cheques', [ChequeController::class, 'index']);
+        Route::post('/cheques', [ChequeController::class, 'store']);
+        Route::get('/cheques/{id}', [ChequeController::class, 'show']);
+        Route::put('/cheques/{id}', [ChequeController::class, 'update']);
+        Route::delete('/cheques/{id}', [ChequeController::class, 'destroy']);
+        Route::post('/cheques/{id}/cobrar', [ChequeController::class, 'cobrar']);
+        Route::post('/cheques/{id}/restore', [ChequeController::class, 'restore']);
     });
 });

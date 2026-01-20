@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
+use App\Models\Cheque;
 
 class VentasController extends Controller
 {
@@ -34,6 +35,156 @@ class VentasController extends Controller
         }
 
         return null;
+    }
+
+    private function ventaMetodoPrincipalEsCheque($metodosPagoDetalle, $metodosPagoString, $data): bool
+    {
+        try {
+            $tipoRaw = null;
+            if (is_array($metodosPagoDetalle) && !empty($metodosPagoDetalle[0]['tipo'])) {
+                $tipoRaw = strtolower(trim((string)$metodosPagoDetalle[0]['tipo']));
+            } elseif (!empty($data['metodo_pago'])) {
+                $tipoRaw = strtolower(trim((string)$data['metodo_pago']));
+            } elseif (!empty($metodosPagoString)) {
+                $tipoRaw = strtolower(trim((string)$metodosPagoString));
+            }
+            return $tipoRaw && (strpos($tipoRaw, 'cheque') !== false);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    private function extraerVentaIdDesdeObservacionesCheque($obs)
+    {
+        if (empty($obs)) return null;
+        if (preg_match('/VENTA_ID\s*:\s*(\d+)/i', (string)$obs, $m)) {
+            return (int)($m[1] ?? 0);
+        }
+        return null;
+    }
+
+    private function syncChequeDesdeVenta(Venta $venta, array $data, $metodosPagoDetalle, $metodosPagoString): void
+    {
+        try {
+            if (!Schema::hasTable('cheques')) return;
+
+            $ventaIdTag = 'ORIGEN:VENTA | VENTA_ID:' . ($venta->id ?? '');
+
+            $isCheque = $this->ventaMetodoPrincipalEsCheque($metodosPagoDetalle, $metodosPagoString, $data);
+
+            // Buscar cheque asociado por tag (incluye eliminados por si hay que restaurar)
+            $cheque = Cheque::withTrashed()
+                ->where('observaciones', 'like', '%' . $ventaIdTag . '%')
+                ->orderBy('id', 'desc')
+                ->first();
+
+            if (!$isCheque) {
+                // Si la venta ya no es Cheque, anular/eliminar cheque asociado si existe
+                if ($cheque && !$cheque->trashed()) {
+                    $cheque->delete();
+                }
+                return;
+            }
+
+            // Resolver cuenta_id (prioridad: request -> por sucursal -> primera cuenta)
+            $cuentaId = $data['cuenta_id'] ?? $data['cuentaId'] ?? $data['cuenta'] ?? $data['id_cuenta'] ?? null;
+            if (!$cuentaId && !empty($venta->sucursal_id) && Schema::hasTable('cuentas_bancarias')) {
+                $cuentaId = DB::table('cuentas_bancarias')->where('id_sucursal', $venta->sucursal_id)->value('id');
+            }
+            if (!$cuentaId && Schema::hasTable('cuentas_bancarias')) {
+                $cuentaId = DB::table('cuentas_bancarias')->value('id');
+            }
+
+            $beneficiarioSucursal = (string)($venta->sucursal_nombre ?? $data['sucursal_nombre'] ?? $venta->sucursal_id ?? $data['sucursal_id'] ?? 'Sucursal');
+
+            $payload = [
+                'cuenta_id' => $cuentaId ? (int)$cuentaId : null,
+                'numero_cheque' => (string)($data['numero_cheque'] ?? $data['nro_cheque'] ?? $data['cheque_numero'] ?? ($venta->folioVenta ?? $venta->id)),
+                'tipo' => 'Recibidos',
+                'fecha_emision' => $venta->fecha ?? $data['fecha'] ?? now()->toDateString(),
+                // fecha_cobro se mantiene si ya existe (solo se cambia desde módulo cheques)
+                'beneficiario' => $beneficiarioSucursal,
+                'concepto' => (string)('Venta ' . (($venta->documentoVenta ?? '') ? ($venta->documentoVenta . ' ') : '') . ($venta->folioVenta ?? $venta->id)),
+                'monto' => (float)($venta->total ?? $data['total'] ?? 0),
+                'estado' => 'Pendiente',
+                'observaciones' => trim($ventaIdTag . ' | ' . (string)($data['observaciones'] ?? $venta->observaciones ?? '')),
+            ];
+
+            if (Schema::hasColumn('cheques', 'user_id')) {
+                $authId = auth()->id();
+                if ($authId) $payload['user_id'] = $authId;
+            }
+
+            // Si existe, actualizar; si estaba eliminado, restaurar.
+            if ($cheque) {
+                if ($cheque->trashed()) {
+                    $cheque->restore();
+                }
+
+                // No sobreescribir fecha_cobro si ya existe
+                if (!empty($cheque->fecha_cobro)) {
+                    unset($payload['fecha_cobro']);
+                }
+
+                // No enviar null cuenta_id si no pudimos resolver (evita romper referencia)
+                if (empty($payload['cuenta_id'])) {
+                    unset($payload['cuenta_id']);
+                }
+
+                $cheque->update($payload);
+                return;
+            }
+
+            // Crear cheque nuevo
+            if (!empty($payload['cuenta_id'])) {
+                Cheque::create($payload);
+            }
+        } catch (\Throwable $e) {
+            try {
+                Log::warning('syncChequeDesdeVenta: no se pudo sincronizar cheque', ['error' => $e->getMessage(), 'venta_id' => $venta->id ?? null]);
+            } catch (\Throwable $__){ }
+        }
+    }
+
+    private function ventaTieneChequeNoPendiente(Venta $venta): bool
+    {
+        try {
+            if (!Schema::hasTable('cheques')) return false;
+
+            $rawMetodo = strtolower(trim((string)($venta->metodos_pago ?? '')));
+            $esCheque = $rawMetodo !== '' && strpos($rawMetodo, 'cheque') !== false;
+            if (!$esCheque) return false;
+
+            $ventaIdTag = 'ORIGEN:VENTA | VENTA_ID:' . ($venta->id ?? '');
+            $cheque = Cheque::withTrashed()
+                ->where('observaciones', 'like', '%' . $ventaIdTag . '%')
+                ->orderBy('id', 'desc')
+                ->first();
+
+            if (!$cheque) return false;
+            if ($cheque->trashed()) return false; // si está eliminado, no bloquea
+
+            $estado = strtolower(trim((string)($cheque->estado ?? '')));
+            // Bloquear si el estado es distinto a pendiente
+            return $estado !== '' && $estado !== 'pendiente';
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    private function eliminarChequeAsociadoAVentaSiExiste(Venta $venta): void
+    {
+        if (!Schema::hasTable('cheques')) return;
+
+        $ventaIdTag = 'ORIGEN:VENTA | VENTA_ID:' . ($venta->id ?? '');
+        $cheque = Cheque::withTrashed()
+            ->where('observaciones', 'like', '%' . $ventaIdTag . '%')
+            ->orderBy('id', 'desc')
+            ->first();
+
+        if ($cheque && !$cheque->trashed()) {
+            $cheque->delete();
+        }
     }
 
     public function index(Request $request)
@@ -384,6 +535,59 @@ class VentasController extends Controller
 
             // Si el método de pago requiere registrar banco, crear movimiento
             $this->registrarMovimientoBancoDesdeVenta($venta, $data, $metodosPagoDetalle, $ventaPayload['metodos_pago'] ?? null);
+
+            // NUEVO: Si el método de pago principal es Cheque, crear registro en tabla `cheques`
+            try {
+                if (Schema::hasTable('cheques')) {
+                    $tipoRaw = null;
+                    if (is_array($metodosPagoDetalle) && !empty($metodosPagoDetalle[0]['tipo'])) {
+                        $tipoRaw = strtolower(trim((string)$metodosPagoDetalle[0]['tipo']));
+                    } elseif (!empty($data['metodo_pago'])) {
+                        $tipoRaw = strtolower(trim((string)$data['metodo_pago']));
+                    } elseif (!empty($ventaPayload['metodos_pago'])) {
+                        $tipoRaw = strtolower(trim((string)$ventaPayload['metodos_pago']));
+                    }
+
+                    $isCheque = $tipoRaw && (strpos($tipoRaw, 'cheque') !== false);
+                    if ($isCheque) {
+                        // cuenta_id: si no viene, intentar inferir por sucursal, si no, primera cuenta
+                        $cuentaId = $data['cuenta_id'] ?? $data['cuentaId'] ?? $data['cuenta'] ?? $data['id_cuenta'] ?? null;
+                        if (!$cuentaId && !empty($ventaPayload['sucursal_id']) && Schema::hasTable('cuentas_bancarias')) {
+                            $cuentaId = DB::table('cuentas_bancarias')->where('id_sucursal', $ventaPayload['sucursal_id'])->value('id');
+                        }
+                        if (!$cuentaId && Schema::hasTable('cuentas_bancarias')) {
+                            $cuentaId = DB::table('cuentas_bancarias')->value('id');
+                        }
+
+                        if ($cuentaId) {
+                            $chequeData = [
+                                'cuenta_id' => (int)$cuentaId,
+                                // número de cheque: si el frontend no lo envía, usar referencia de la venta
+                                'numero_cheque' => (string)($data['numero_cheque'] ?? $data['nro_cheque'] ?? $data['cheque_numero'] ?? ($venta->folioVenta ?? $venta->id)),
+                                // Por defecto lo tratamos como Recibidos (pago recibido)
+                                'tipo' => 'Recibidos',
+                                'fecha_emision' => $venta->fecha ?? $data['fecha'] ?? now()->toDateString(),
+                                'fecha_cobro' => null,
+                                // Mostrar la sucursal como origen en el módulo de cheques
+                                'beneficiario' => (string)($ventaPayload['sucursal_nombre'] ?? $data['sucursal_nombre'] ?? $venta->sucursal_nombre ?? $ventaPayload['sucursal_id'] ?? $data['sucursal_id'] ?? 'Sucursal'),
+                                'concepto' => (string)('Venta ' . (($venta->documentoVenta ?? '') ? ($venta->documentoVenta . ' ') : '') . ($venta->folioVenta ?? $venta->id)),
+                                'monto' => (float)($venta->total ?? $data['total'] ?? 0),
+                                'estado' => 'Pendiente',
+                                'observaciones' => trim('ORIGEN:VENTA | VENTA_ID:' . ($venta->id ?? '') . ' | ' . (string)($data['observaciones'] ?? '')),
+                            ];
+
+                            if (Schema::hasColumn('cheques', 'user_id')) {
+                                $authId = auth()->id();
+                                if ($authId) $chequeData['user_id'] = $authId;
+                            }
+
+                            Cheque::create($chequeData);
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning('No se pudo crear cheque desde venta', ['error' => $e->getMessage(), 'venta_id' => $venta->id ?? null]);
+            }
 
             DB::commit();
 
@@ -815,6 +1019,14 @@ class VentasController extends Controller
             return response()->json(['message' => 'Venta no encontrada'], 404);
         }
 
+        // NUEVO: Bloqueo por cheque (si el cheque asociado ya no está Pendiente)
+        if ($this->ventaTieneChequeNoPendiente($venta)) {
+            return response()->json([
+                'message' => 'No se puede editar una venta pagada con Cheque cuando el cheque ya no está en estado Pendiente.',
+                'code' => 'VENTA_CHEQUE_NO_PENDIENTE',
+            ], 409);
+        }
+
         // Bloqueo: si es Crédito (Deuda) y ya tiene pagos registrados, no permitir edición
         if ($this->ventaCreditoTienePagos($venta)) {
             return response()->json([
@@ -946,6 +1158,13 @@ class VentasController extends Controller
                 Log::error('VentasController@update: error sincronizando movimiento_banco', ['error' => $e->getMessage(), 'venta_id' => $venta->id]);
             }
 
+            // NUEVO: sincronizar cheque asociado a la venta según método de pago
+            try {
+                $this->syncChequeDesdeVenta($venta, array_merge($data, $updatePayload), $metodosPagoDetalle, $updatePayload['metodos_pago'] ?? null);
+            } catch (\Throwable $e) {
+                Log::warning('VentasController@update: error sincronizando cheque', ['error' => $e->getMessage(), 'venta_id' => $venta->id]);
+            }
+
             // Adjuntar métodos de pago persistidos (si existen) al objeto devuelto
             try {
                 $venta = $venta->load('detalles');
@@ -980,6 +1199,14 @@ class VentasController extends Controller
         $venta = Venta::find($id);
         if (!$venta) {
             return response()->json(['message' => 'Venta no encontrada'], 404);
+        }
+
+        // NUEVO: Si es venta con Cheque y el cheque ya no está Pendiente, no permitir eliminar
+        if ($this->ventaTieneChequeNoPendiente($venta)) {
+            return response()->json([
+                'message' => 'No se puede eliminar una venta pagada con Cheque cuando el cheque ya no está en estado Pendiente.',
+                'code' => 'VENTA_CHEQUE_NO_PENDIENTE',
+            ], 409);
         }
 
         // Bloqueo: si es Crédito (Deuda) y ya tiene pagos registrados, no permitir eliminación
@@ -1084,6 +1311,17 @@ class VentasController extends Controller
                 }
             } catch (\Throwable $e) {
                 // no romper por errores de banco
+            }
+
+            // NUEVO: si es venta con cheque (pendiente), al eliminar desde ventas eliminar también el registro en cheques
+            try {
+                $rawMetodo = strtolower(trim((string)($venta->metodos_pago ?? '')));
+                if ($rawMetodo !== '' && strpos($rawMetodo, 'cheque') !== false) {
+                    $this->eliminarChequeAsociadoAVentaSiExiste($venta);
+                }
+            } catch (\Throwable $e) {
+                // no abortar eliminación de venta por fallo al borrar cheque, pero dejar log
+                try { Log::warning('VentasController@destroy: no se pudo eliminar cheque asociado', ['error' => $e->getMessage(), 'venta_id' => $venta->id]); } catch (\Throwable $__){ }
             }
 
             // Soft delete de la venta (modelo ya maneja detalles)

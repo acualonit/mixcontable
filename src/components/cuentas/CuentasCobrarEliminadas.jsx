@@ -38,6 +38,11 @@ function CuentasCobrarEliminadas({ onBack }) {
     return `${dd}/${mm}/${yyyy}`;
   };
 
+  const textOrDash = (v) => {
+    const s = (v ?? '').toString().trim();
+    return s === '' ? '—' : s;
+  };
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -156,7 +161,11 @@ function CuentasCobrarEliminadas({ onBack }) {
             <div className="text-muted">Cargando...</div>
           ) : (
             <div className="table-responsive">
-              <table className="table table-hover table-bordered">
+              <table
+                className="table table-hover table-bordered"
+                style={{ userSelect: 'none' }}
+                aria-label="Tabla de ventas eliminadas (solo lectura)"
+              >
                 <thead className="table-light">
                   <tr>
                     <th>Fecha Eliminación</th>
@@ -183,23 +192,26 @@ function CuentasCobrarEliminadas({ onBack }) {
                   ) : (
                     rows.map(r => (
                       <tr key={r.id}>
-                        <td>{formatDate(r.fechaEliminacion)}</td>
-                        <td>{r.cliente}</td>
-                        <td>{r.rut}</td>
-                        <td>{r.docTipo}</td>
-                        <td>{r.docNum}</td>
-                        <td>{formatDate(r.fechaEmision)}</td>
-                        <td>{formatDate(r.fechaVenc)}</td>
+                        <td>{textOrDash(formatDate(r.fechaEliminacion))}</td>
+                        <td>{textOrDash(r.cliente)}</td>
+                        <td>{textOrDash(r.rut)}</td>
+                        <td>{textOrDash(r.docTipo)}</td>
+                        <td>{textOrDash(r.docNum)}</td>
+                        <td>{textOrDash(formatDate(r.fechaEmision))}</td>
+                        <td>{textOrDash(formatDate(r.fechaVenc))}</td>
                         <td>{`$${Number(r.montoTotal || 0).toLocaleString()}`}</td>
                         <td>{`$${Number(r.montoPagado || 0).toLocaleString()}`}</td>
                         <td>{`$${Number(r.saldo || 0).toLocaleString()}`}</td>
-                        <td>{r.usuario}</td>
-                        <td>{r.motivo}</td>
+                        <td>{textOrDash(r.usuario)}</td>
+                        <td>{textOrDash(r.motivo)}</td>
                       </tr>
                     ))
                   )}
                 </tbody>
               </table>
+              <small className="text-muted d-block">
+                Vista solo lectura.
+              </small>
             </div>
           )}
         </div>

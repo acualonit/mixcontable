@@ -14,7 +14,18 @@ class ChequeController extends Controller
         // Siempre unir con cuentas_bancarias para exponer nombre de banco y número de cuenta
         $query = DB::table('cheques')
             ->leftJoin('cuentas_bancarias', 'cheques.cuenta_id', '=', 'cuentas_bancarias.id')
-            ->select('cheques.*', 'cuentas_bancarias.banco as cuenta_banco', 'cuentas_bancarias.numero_cuenta as cuenta_numero');
+            // Tabla real: users (ver db_dep/users.sql)
+            ->leftJoin('users', 'cheques.user_id', '=', 'users.id')
+            ->select(
+                'cheques.*',
+                'cuentas_bancarias.banco as cuenta_banco',
+                'cuentas_bancarias.numero_cuenta as cuenta_numero',
+                // users tiene name/email
+                DB::raw('COALESCE(users.name, users.email) as usuario_nombre')
+            );
+
+        // No mostrar cheques eliminados (deleted_at)
+        $query->whereNull('cheques.deleted_at');
 
         // Filtrado: normalizamos comparaciones a minúsculas para mayor tolerancia
         if ($request->filled('estado')) {
@@ -37,10 +48,18 @@ class ChequeController extends Controller
         }
 
         if ($request->filled('tipo')) {
-            $tipo = strtolower($request->get('tipo'));
-            // Hacer comparación flexible: 'emitid' coincide con 'emitido'/'emitidos'
-            $tipoLike = "%{$tipo}%";
-            $query->whereRaw('LOWER(cheques.tipo) LIKE ?', [$tipoLike]);
+            // Frontend envía: emitido/recibido. DB enum: Emitidos/Recibidos.
+            $tipoIn = strtolower(trim((string)$request->get('tipo')));
+            $tipo = $tipoIn;
+            if (in_array($tipoIn, ['emitido', 'emitidos'], true)) $tipo = 'Emitidos';
+            if (in_array($tipoIn, ['recibido', 'recibidos'], true)) $tipo = 'Recibidos';
+
+            if (in_array($tipo, ['Emitidos', 'Recibidos'], true)) {
+                $query->where('cheques.tipo', $tipo);
+            } else {
+                // fallback tolerante
+                $query->whereRaw('LOWER(cheques.tipo) LIKE ?', ['%' . $tipoIn . '%']);
+            }
         }
 
         $cheques = $query->orderBy('cheques.created_at', 'desc')->get();
@@ -51,18 +70,68 @@ class ChequeController extends Controller
     public function store(Request $request)
     {
         $data = $request->validate([
-            'cuenta_id' => ['nullable','integer'],
+            'cuenta_id' => ['required','integer'],
             'numero_cheque' => ['required','string'],
+            'tipo' => ['nullable','string'],
             'fecha_emision' => ['required','date'],
             'fecha_cobro' => ['nullable','date'],
-            'beneficiario' => ['nullable','string'],
+            'beneficiario' => ['required','string'],
             'concepto' => ['nullable','string'],
             'monto' => ['required','numeric'],
             'estado' => ['nullable','string'],
-            'observaciones' => ['nullable','string']
+            'observaciones' => ['nullable','string'],
+            // permitir override explícito solo si lo envían (opcional)
+            'user_id' => ['nullable','integer'],
         ]);
 
-        $data['estado'] = $data['estado'] ?? 'EMITIDO';
+        // Si ya existe la columna user_id, siempre registrar el usuario autenticado (si hay sesión)
+        if (Schema::hasColumn('cheques', 'user_id')) {
+            $authId = auth()->id();
+            if ($authId) {
+                $data['user_id'] = $authId;
+            }
+        } else {
+            unset($data['user_id']);
+        }
+
+        // Normalizar tipo (DB: Emitidos/Recibidos)
+        if (!array_key_exists('tipo', $data) || $data['tipo'] === null || trim((string)$data['tipo']) === '') {
+            $data['tipo'] = 'Emitidos';
+        } else {
+            $tipoIn = strtolower(trim((string)$data['tipo']));
+            $mapTipo = [
+                'emitido' => 'Emitidos',
+                'emitidos' => 'Emitidos',
+                'recibido' => 'Recibidos',
+                'recibidos' => 'Recibidos',
+                'emitidos' => 'Emitidos',
+                'recibidos' => 'Recibidos',
+            ];
+            $data['tipo'] = $mapTipo[$tipoIn] ?? $data['tipo'];
+            if (!in_array($data['tipo'], ['Emitidos', 'Recibidos'], true)) {
+                $data['tipo'] = 'Emitidos';
+            }
+        }
+
+        // Normalizar estado (DB: Pendiente/Cobrado/Rechazado/Prestado)
+        $allowedEstados = ['Pendiente', 'Cobrado', 'Rechazado', 'Prestado'];
+        $estadoIn = trim((string)($data['estado'] ?? ''));
+        $estadoKey = strtolower($estadoIn);
+        $mapEstado = [
+            '' => 'Pendiente',
+            'pendiente' => 'Pendiente',
+            'cobrado' => 'Cobrado',
+            'rechazado' => 'Rechazado',
+            'prestado' => 'Prestado',
+            // compat antiguos/otros
+            'emitido' => 'Pendiente',
+            'emitidos' => 'Pendiente',
+            'emision' => 'Pendiente',
+            'anulado' => 'Rechazado',
+        ];
+        $estadoMapped = $mapEstado[$estadoKey] ?? $estadoIn;
+        $data['estado'] = in_array($estadoMapped, $allowedEstados, true) ? $estadoMapped : 'Pendiente';
+
         // Si la tabla tiene columna id_sucursal, obtenerla desde la cuenta bancaria seleccionada
         if (Schema::hasColumn('cheques', 'id_sucursal')) {
             if (!empty($data['cuenta_id'])) {
@@ -86,10 +155,16 @@ class ChequeController extends Controller
 
     public function show($id)
     {
-        // Obtener cheque junto con datos de la cuenta bancaria (banco y numero de cuenta)
+        // Obtener cheque junto con datos de la cuenta bancaria (banco y numero de cuenta) y usuario
         $item = DB::table('cheques')
             ->leftJoin('cuentas_bancarias', 'cheques.cuenta_id', '=', 'cuentas_bancarias.id')
-            ->select('cheques.*', 'cuentas_bancarias.banco as cuenta_banco', 'cuentas_bancarias.numero_cuenta as cuenta_numero')
+            ->leftJoin('users', 'cheques.user_id', '=', 'users.id')
+            ->select(
+                'cheques.*',
+                'cuentas_bancarias.banco as cuenta_banco',
+                'cuentas_bancarias.numero_cuenta as cuenta_numero',
+                DB::raw('COALESCE(users.name, users.email) as usuario_nombre')
+            )
             ->where('cheques.id', $id)
             ->first();
 
@@ -100,21 +175,86 @@ class ChequeController extends Controller
         return response()->json(['data' => $item]);
     }
 
-    public function update(Request $request, Cheque $cheque)
+    public function update(Request $request, $id)
     {
+        // Para rechazar/editar NO se debe tocar deleted_at, por eso NO usamos delete aquí.
+        // Además, el rechazo podría aplicarse incluso si estuvo eliminado previamente, por eso withTrashed.
+        $cheque = Cheque::withTrashed()->find($id);
+        if (!$cheque) {
+            return response()->json(['message' => 'Cheque no encontrado'], 404);
+        }
+
         $data = $request->validate([
             'cuenta_id' => ['nullable','integer'],
             'numero_cheque' => ['nullable','string'],
+            'tipo' => ['nullable','string'],
             'fecha_emision' => ['nullable','date'],
             'fecha_cobro' => ['nullable','date'],
             'beneficiario' => ['nullable','string'],
             'concepto' => ['nullable','string'],
             'monto' => ['nullable','numeric'],
             'estado' => ['nullable','string'],
-            'observaciones' => ['nullable','string']
+            'observaciones' => ['nullable','string'],
+            'user_id' => ['nullable','integer'],
         ]);
 
+        // Si el cheque proviene de una venta, permitir editar SOLO fecha_cobro (y estado/user_id si aplica)
+        // Marca: "ORIGEN:VENTA" en observaciones.
+        $obs = (string)($cheque->observaciones ?? '');
+        $isFromVenta = stripos($obs, 'origen:venta') !== false;
+        if ($isFromVenta) {
+            $allowedKeys = ['fecha_cobro', 'estado', 'user_id'];
+            $data = array_intersect_key($data, array_flip($allowedKeys));
+        }
+
+        if (Schema::hasColumn('cheques', 'user_id')) {
+            $authId = auth()->id();
+            if ($authId) {
+                $data['user_id'] = $authId;
+            }
+        } else {
+            unset($data['user_id']);
+        }
+
+        if (array_key_exists('tipo', $data)) {
+            $tipoIn = trim((string)$data['tipo']);
+            if ($tipoIn === '') {
+                unset($data['tipo']);
+            } else {
+                $tipoKey = strtolower($tipoIn);
+                $mapTipo = [
+                    'emitido' => 'Emitidos',
+                    'emitidos' => 'Emitidos',
+                    'recibido' => 'Recibidos',
+                    'recibidos' => 'Recibidos',
+                ];
+                $tipoMapped = $mapTipo[$tipoKey] ?? $tipoIn;
+                $data['tipo'] = in_array($tipoMapped, ['Emitidos', 'Recibidos'], true) ? $tipoMapped : $cheque->tipo;
+            }
+        }
+
+        if (array_key_exists('estado', $data)) {
+            $allowedEstados = ['Pendiente', 'Cobrado', 'Rechazado', 'Prestado'];
+            $estadoIn = trim((string)$data['estado']);
+            if ($estadoIn === '') {
+                unset($data['estado']);
+            } else {
+                $estadoKey = strtolower($estadoIn);
+                $mapEstado = [
+                    'pendiente' => 'Pendiente',
+                    'cobrado' => 'Cobrado',
+                    'rechazado' => 'Rechazado',
+                    'prestado' => 'Prestado',
+                    'emitido' => 'Pendiente',
+                    'anulado' => 'Rechazado',
+                ];
+                $estadoMapped = $mapEstado[$estadoKey] ?? $estadoIn;
+                $data['estado'] = in_array($estadoMapped, $allowedEstados, true) ? $estadoMapped : $cheque->estado;
+            }
+        }
+
         // Para update también asignar id_sucursal desde la cuenta si corresponde
+        // Nota: si el cheque es de venta, no permitimos cambiar cuenta_id (ya filtrado arriba).
         if (Schema::hasColumn('cheques', 'id_sucursal')) {
             if (!empty($data['cuenta_id'])) {
                 $cuenta = DB::table('cuentas_bancarias')->where('id', $data['cuenta_id'])->first();
@@ -133,16 +273,35 @@ class ChequeController extends Controller
         return response()->json(['data' => $cheque]);
     }
 
-    public function destroy(Cheque $cheque)
+    public function destroy($id)
     {
+        $cheque = Cheque::find($id);
+        if (!$cheque) {
+            return response()->json(['message' => 'Cheque no encontrado'], 404);
+        }
+
+        // Bloquear eliminación si proviene de una venta
+        $obs = (string)($cheque->observaciones ?? '');
+        if (stripos($obs, 'origen:venta') !== false) {
+            return response()->json([
+                'message' => 'Este cheque proviene de una venta y no se puede eliminar desde el módulo de Cheques. Debe gestionarse desde Ventas (solo si está Pendiente).',
+                'code' => 'CHEQUE_DE_VENTA_NO_ELIMINABLE',
+            ], 409);
+        }
+
         $cheque->delete();
         return response()->json(['message' => 'Cheque anulado/eliminado']);
     }
 
-    public function cobrar(Request $request, Cheque $cheque)
+    public function cobrar(Request $request, $id)
     {
-        // Cambiar estado a COBRADO y opcionalmente registrar movimiento bancario
-        $cheque->estado = 'COBRADO';
+        $cheque = Cheque::find($id);
+        if (!$cheque) {
+            return response()->json(['message' => 'Cheque no encontrado'], 404);
+        }
+
+        // Cambiar estado a Cobrado
+        $cheque->estado = 'Cobrado';
         if ($request->filled('fecha_cobro')) {
             $cheque->fecha_cobro = $request->get('fecha_cobro');
         }

@@ -13,8 +13,10 @@ class Cheque extends Model
 
     protected $fillable = [
         'cuenta_id',
+        'user_id',
         'id_sucursal',
         'numero_cheque',
+        'tipo',
         'fecha_emision',
         'fecha_cobro',
         'beneficiario',
