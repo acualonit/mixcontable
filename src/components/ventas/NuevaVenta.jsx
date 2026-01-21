@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { fetchEmpresas, fetchSucursales, fetchClienteByRut } from '../../utils/configApi';
+import React, { useEffect, useMemo, useState } from 'react';
+import Select from 'react-select';
+import { fetchEmpresas, fetchSucursales, fetchClienteByRut, searchClientes } from '../../utils/configApi';
 import { API_BASE_URL } from '../../utils/configApi';
 
 // Mapea las claves internas del select a los literales esperados por el backend (ENUM)
@@ -154,9 +155,98 @@ function NuevaVenta({ onClose, onSave, initialData }) {
   }, [initialData]);
 
   const [clienteBuscado, setClienteBuscado] = useState(null);
+  const [clienteSelectValue, setClienteSelectValue] = useState(null);
+  const [clienteOptions, setClienteOptions] = useState([]);
+  const [loadingCliente, setLoadingCliente] = useState(false);
   const [sucursales, setSucursales] = useState([]);
   const [cuentasBancarias, setCuentasBancarias] = useState([]);
   const [loadingCuentasBancarias, setLoadingCuentasBancarias] = useState(false);
+
+  const toClienteOption = (cli) => {
+    if (!cli) return null;
+    const id = cli.id ?? cli.ID ?? cli.id_cliente;
+    const rut = cli.rut || cli.documento || '';
+    const nombre = cli.razon_social || cli.nombre || cli.nombre_fantasia || cli.nombre_completo || '';
+    const label = `${rut}${nombre ? ' - ' + nombre : ''}`.trim();
+    return { value: id, label, cli };
+  };
+
+  // Precargar cliente seleccionado al editar
+  useEffect(() => {
+    try {
+      const cliId = formData.cliente;
+      if (!cliId) {
+        setClienteSelectValue(null);
+        return;
+      }
+      if (clienteSelectValue && String(clienteSelectValue.value) === String(cliId)) return;
+
+      // Si ya tenemos clienteBuscado, usarlo
+      if (clienteBuscado) {
+        const opt = toClienteOption(clienteBuscado);
+        if (opt) setClienteSelectValue(opt);
+        return;
+      }
+
+      // Fallback: intentar cargar por rut si está
+      if (formData.rut) {
+        fetchClienteByRut(formData.rut)
+          .then((cli) => {
+            if (!cli) return;
+            setClienteBuscado(cli);
+            const opt = toClienteOption(cli);
+            if (opt) setClienteSelectValue(opt);
+          })
+          .catch(() => null);
+      }
+    } catch (e) {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData.cliente]);
+
+  const loadClienteOptions = async (inputValue) => {
+    const q = (inputValue || '').trim();
+    if (q.length < 2) {
+      setClienteOptions([]);
+      return;
+    }
+    setLoadingCliente(true);
+    try {
+      const res = await searchClientes(q, { limit: 20 });
+      const list = Array.isArray(res) ? res : (res?.data ?? []);
+      const opts = (list || []).map(toClienteOption).filter(Boolean);
+      setClienteOptions(opts);
+    } catch {
+      setClienteOptions([]);
+    } finally {
+      setLoadingCliente(false);
+    }
+  };
+
+  // NUEVO: al editar ventas con cheque, precargar fecha de corte
+  useEffect(() => {
+    try {
+      if (!initialData) return;
+      const mp = formData?.metodoPago1?.tipo;
+      if (mp !== 'cheque') return;
+
+      const val =
+        formData.fecha_cobro_cheque ||
+        initialData.fecha_cobro ||
+        initialData.fechaCobro ||
+        initialData?.cheque?.fecha_cobro ||
+        initialData?.cheque?.fechaCobro ||
+        null;
+
+      if (val && !formData.fecha_cobro_cheque) {
+        setFormData((prev) => ({ ...prev, fecha_cobro_cheque: String(val).slice(0, 10) }));
+      }
+    } catch (e) {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialData, formData?.metodoPago1?.tipo]);
 
   // Si existe una cuenta bancaria asociada a la sucursal seleccionada, seleccionar automáticamente
   React.useEffect(() => {
@@ -212,22 +302,6 @@ function NuevaVenta({ onClose, onSave, initialData }) {
     
     return () => { mounted = false; };
   }, []);
-
-  const handleBuscarCliente = async () => {
-    if (!formData.rut) return alert('Ingrese RUT para buscar');
-    try {
-      const cliente = await fetchClienteByRut(formData.rut);
-      if (!cliente) {
-        setClienteBuscado(null);
-        return alert('Cliente no encontrado');
-      }
-      setClienteBuscado(cliente);
-      setFormData(prev => ({ ...prev, cliente: cliente.id ?? cliente.ID ?? cliente.id_cliente ?? cliente }));
-    } catch (err) {
-      console.error('Error buscando cliente', err);
-      alert('Error al buscar cliente');
-    }
-  };
 
   const handleAddItem = () => {
     setFormData({
@@ -366,10 +440,19 @@ function NuevaVenta({ onClose, onSave, initialData }) {
       // Enviar metodos_pago como arreglo para que el backend pueda generar movimientos bancarios automáticamente
       metodos_pago: (function(){
         const arr = [];
-        if (formData.metodoPago1 && formData.metodoPago1.tipo) arr.push({ tipo: formData.metodoPago1.tipo, monto: Number(formData.metodoPago1.monto || 0) });
+        if (formData.metodoPago1 && formData.metodoPago1.tipo) {
+          const mp1 = { tipo: formData.metodoPago1.tipo, monto: Number(formData.metodoPago1.monto || 0) };
+          // NUEVO: para cheque, permitir enviar fecha de cobro desde ventas
+          if (formData.metodoPago1.tipo === 'cheque' && formData.fecha_cobro_cheque) {
+            mp1.fecha_cobro = formData.fecha_cobro_cheque;
+          }
+          arr.push(mp1);
+        }
         if (formData.metodoPago2 && formData.metodoPago2.tipo) arr.push({ tipo: formData.metodoPago2.tipo, monto: Number(formData.metodoPago2.monto || 0) });
         return arr.length ? arr : null;
       })(),
+      // NUEVO: enviar fecha_cobro al backend (para que al crear cheque desde venta lo guarde)
+      ...(formData.metodoPago1?.tipo === 'cheque' && formData.fecha_cobro_cheque ? { fecha_cobro: formData.fecha_cobro_cheque } : {}),
       // Si se seleccionó cuenta bancaria en el formulario y hay un método bancario, enviar cuenta_id
       ...( (function(){
         const bankTypes = ['transferencia','debito','credito','online','transbank'];
@@ -483,6 +566,20 @@ function NuevaVenta({ onClose, onSave, initialData }) {
           </div>
         )}
 
+        {/* NUEVO: Campo condicional fecha de cobro (fecha de corte) para Cheque */}
+        {metodoPago.tipo === 'cheque' && (
+          <div className="col-md-4">
+            <label className="form-label">Fecha de Cobro</label>
+            <input
+              type="date"
+              className="form-control"
+              value={formData.fecha_cobro_cheque || ''}
+              onChange={(e) => setFormData(prev => ({ ...prev, fecha_cobro_cheque: e.target.value }))}
+              placeholder="Fecha de cobro"
+            />
+          </div>
+        )}
+
       </div>
     );
   };
@@ -557,25 +654,41 @@ function NuevaVenta({ onClose, onSave, initialData }) {
                 </div>
               </div>
 
+              {/* REEMPLAZO: selector tipo Select2 */}
               <div className="row mb-3">
                 <div className="col-md-6">
-                  <label className="form-label">RUT Cliente</label>
-                  <div className="input-group">
-                    <input
-                      type="text"
-                      className="form-control"
-                      placeholder="Ingrese RUT del cliente"
-                      value={formData.rut}
-                      onChange={(e) => setFormData({...formData, rut: e.target.value})}
-                    />
-                    <button 
-                      type="button" 
-                      className="btn btn-primary"
-                      onClick={handleBuscarCliente}
-                    >
-                      Buscar
-                    </button>
-                  </div>
+                  <label className="form-label">Cliente</label>
+                  <Select
+                    value={clienteSelectValue}
+                    onInputChange={(val) => {
+                      loadClienteOptions(val);
+                    }}
+                    onChange={(opt) => {
+                      setClienteSelectValue(opt);
+                      if (!opt) {
+                        setClienteBuscado(null);
+                        setFormData((prev) => ({ ...prev, cliente: null, rut: '' }));
+                        return;
+                      }
+                      const cli = opt.cli;
+                      setClienteBuscado(cli);
+                      setFormData((prev) => ({
+                        ...prev,
+                        cliente: opt.value,
+                        rut: (cli?.rut || cli?.documento || '').toString(),
+                      }));
+                    }}
+                    options={clienteOptions}
+                    isClearable
+                    isLoading={loadingCliente}
+                    placeholder="Buscar por RUT o Razón Social..."
+                    noOptionsMessage={() => 'Sin resultados'}
+                    styles={{
+                      menuPortal: (base) => ({ ...base, zIndex: 9999 }),
+                    }}
+                    menuPortalTarget={document.body}
+                  />
+                  <small className="text-muted">Escriba y aparecerán clientes de inmediato.</small>
                 </div>
               </div>
 

@@ -20,15 +20,21 @@ class ClienteController extends Controller
         }
 
         if ($request->filled('q')) {
-            $q = $request->get('q');
-            $query->where(function($qbuilder) use ($q) {
-                $qbuilder->where('razon_social', 'like', "%{$q}%")
-                    ->orWhere('nombre_fantasia', 'like', "%{$q}%")
-                    ->orWhere('rut', 'like', "%{$q}%");
+            $term = $request->get('q');
+            $query->where(function($qbuilder) use ($term) {
+                $qbuilder->where('razon_social', 'like', "%{$term}%")
+                    ->orWhere('nombre_fantasia', 'like', "%{$term}%")
+                    ->orWhere('rut', 'like', "%{$term}%");
             });
         }
 
-        $clientes = $query->orderBy('razon_social')->get();
+        $limit = (int)($request->get('limit', 0));
+        if ($limit > 0 && $limit <= 200) {
+            $clientes = $query->orderBy('razon_social')->limit($limit)->get();
+        } else {
+            $clientes = $query->orderBy('razon_social')->get();
+        }
+
         return response()->json($clientes);
     }
 

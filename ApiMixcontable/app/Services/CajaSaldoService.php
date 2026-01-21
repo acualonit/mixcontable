@@ -45,41 +45,12 @@ class CajaSaldoService
                 Log::warning('CajaSaldoService: columnas tipo/monto no detectadas en movimientos_caja', ['cols' => $movCols]);
             }
 
-            // Ventas: detectar columna de método de pago y de total
-            $ventasCols = Schema::hasTable('ventas') ? Schema::getColumnListing('ventas') : [];
-            $mpCol = in_array('metodos_pago', $ventasCols) ? 'metodos_pago' : (in_array('metodo_pago', $ventasCols) ? 'metodo_pago' : null);
-            $totalCol = in_array('total', $ventasCols) ? 'total' : null;
-            $ventasDeleted = in_array('deleted_at', $ventasCols) ? 'deleted_at' : null;
+            // IMPORTANTE:
+            // Antes se sumaban también las ventas en efectivo directo desde tabla ventas ($ventas).
+            // Ahora las ventas en efectivo ya generan su registro en movimientos_caja, por lo que volver a
+            // sumarlas aquí duplica el saldo. El saldo se calcula únicamente desde movimientos_caja.
 
-            $ventas = 0.0;
-            if ($totalCol) {
-                $ventasQuery = DB::table('ventas');
-                if ($ventasDeleted) {
-                    $ventasQuery->whereNull('deleted_at');
-                }
-
-                // Contar SOLO ventas pagadas en EFECTIVO (no considerar Transferencia, Tarjeta, Online, Crédito, Cheque)
-                if ($mpCol) {
-                    $ventasQuery->where($mpCol, 'Efectivo');
-
-                    // Excluir ventas que ya tienen un movimiento en movimientos_caja con origen = 'venta:{id}'
-                    if (Schema::hasTable('movimientos_caja')) {
-                        $movCols2 = Schema::getColumnListing('movimientos_caja');
-                        if (in_array('origen', $movCols2)) {
-                            $ventasQuery->whereRaw("NOT EXISTS (SELECT 1 FROM movimientos_caja mc WHERE mc.origen = CONCAT('venta:', ventas.id) AND mc.caja_id = ?" . (in_array('deleted_at', $movCols2) ? " AND mc.deleted_at IS NULL" : "") . ")", [$cajaId]);
-                        }
-                    }
-                } else {
-                    // si no hay columna de método, no podemos saber; excluir ventas de impacto en caja
-                    $ventasQuery->whereRaw('1 = 0');
-                }
-
-                $ventas = (float)$ventasQuery->selectRaw("COALESCE(SUM({$totalCol}),0) as s")->value('s');
-            } else {
-                Log::warning('CajaSaldoService: columna total no detectada en ventas', ['cols' => $ventasCols]);
-            }
-
-            $saldoActual = $mov + $ventas;
+            $saldoActual = $mov;
 
             // Columna destino: preferir saldo_actual si existe; fallback a saldo_inicial
             $targetCol = null;

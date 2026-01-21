@@ -102,7 +102,8 @@ class VentasController extends Controller
                 'numero_cheque' => (string)($data['numero_cheque'] ?? $data['nro_cheque'] ?? $data['cheque_numero'] ?? ($venta->folioVenta ?? $venta->id)),
                 'tipo' => 'Recibidos',
                 'fecha_emision' => $venta->fecha ?? $data['fecha'] ?? now()->toDateString(),
-                // fecha_cobro se mantiene si ya existe (solo se cambia desde módulo cheques)
+                // fecha_cobro se sincroniza desde ventas cuando venga informada
+                'fecha_cobro' => $data['fecha_cobro'] ?? ($data['fechaCobro'] ?? ($data['fecha_cobro_cheque'] ?? null)),
                 'beneficiario' => $beneficiarioSucursal,
                 'concepto' => (string)('Venta ' . (($venta->documentoVenta ?? '') ? ($venta->documentoVenta . ' ') : '') . ($venta->folioVenta ?? $venta->id)),
                 'monto' => (float)($venta->total ?? $data['total'] ?? 0),
@@ -115,15 +116,15 @@ class VentasController extends Controller
                 if ($authId) $payload['user_id'] = $authId;
             }
 
+            // Si NO viene fecha_cobro desde ventas, no tocar lo existente
+            if (empty($payload['fecha_cobro'])) {
+                unset($payload['fecha_cobro']);
+            }
+
             // Si existe, actualizar; si estaba eliminado, restaurar.
             if ($cheque) {
                 if ($cheque->trashed()) {
                     $cheque->restore();
-                }
-
-                // No sobreescribir fecha_cobro si ya existe
-                if (!empty($cheque->fecha_cobro)) {
-                    unset($payload['fecha_cobro']);
                 }
 
                 // No enviar null cuenta_id si no pudimos resolver (evita romper referencia)
@@ -185,6 +186,71 @@ class VentasController extends Controller
         if ($cheque && !$cheque->trashed()) {
             $cheque->delete();
         }
+    }
+
+    private function eliminarMovimientoCajaAsociadoAVentaSiExiste(Venta $venta): void
+    {
+        if (!Schema::hasTable('movimientos_caja')) return;
+
+        $cols = Schema::getColumnListing('movimientos_caja');
+
+        $ventaId = (int)($venta->id ?? 0);
+        $ventaIdTag = 'ORIGEN:VENTA | VENTA_ID:' . ($ventaId ?: ($venta->id ?? ''));
+
+        // 1) Preferir eliminación por mapeo determinista (storage)
+        $mapDir = storage_path('app/venta_movimiento_caja');
+        $mapFile = $mapDir . DIRECTORY_SEPARATOR . $ventaId . '.json';
+        $mappedId = null;
+        try {
+            if ($ventaId > 0 && file_exists($mapFile)) {
+                $j = json_decode((string)file_get_contents($mapFile), true);
+                if (is_array($j) && !empty($j['movimiento_caja_id'])) $mappedId = (int)$j['movimiento_caja_id'];
+            }
+        } catch (\Throwable $__) {
+            $mappedId = null;
+        }
+
+        $movimiento = null;
+        if ($mappedId) {
+            $movimiento = DB::table('movimientos_caja')->where('id', $mappedId)->first();
+        }
+
+        // 2) Fallback: buscar por tag en observaciones (solo si existe esa columna)
+        if (!$movimiento && Schema::hasColumn('movimientos_caja', 'observaciones')) {
+            $movimiento = DB::table('movimientos_caja')
+                ->where('observaciones', 'like', '%' . $ventaIdTag . '%')
+                ->orderBy('id', 'desc')
+                ->first();
+        }
+
+        if (!$movimiento) {
+            // limpiar mapeo si existe (para no dejar basura)
+            try { if ($ventaId > 0 && file_exists($mapFile)) @unlink($mapFile); } catch (\Throwable $__) {}
+            return;
+        }
+
+        // Capturar caja_id para recomputar
+        $cajaId = 1;
+        try {
+            if (isset($movimiento->caja_id) && $movimiento->caja_id !== null) $cajaId = (int)$movimiento->caja_id;
+        } catch (\Throwable $__) {
+            $cajaId = 1;
+        }
+
+        // Eliminar (soft-delete si aplica)
+        if (in_array('deleted_at', $cols, true)) {
+            $payload = ['deleted_at' => now()];
+            if (in_array('updated_at', $cols, true)) $payload['updated_at'] = now();
+            DB::table('movimientos_caja')->where('id', (int)$movimiento->id)->update($payload);
+        } else {
+            DB::table('movimientos_caja')->where('id', (int)$movimiento->id)->delete();
+        }
+
+        // Limpiar mapeo
+        try { if ($ventaId > 0 && file_exists($mapFile)) @unlink($mapFile); } catch (\Throwable $__) {}
+
+        // Recalcular saldo
+        try { CajaSaldoService::recomputeSaldoActual($cajaId); } catch (\Throwable $__) {}
     }
 
     public function index(Request $request)
@@ -536,6 +602,10 @@ class VentasController extends Controller
             // Si el método de pago requiere registrar banco, crear movimiento
             $this->registrarMovimientoBancoDesdeVenta($venta, $data, $metodosPagoDetalle, $ventaPayload['metodos_pago'] ?? null);
 
+            // NUEVO: Si el método de pago principal es Efectivo, crear movimiento en caja
+            // En creación siempre debe ser un registro nuevo.
+            $this->registrarMovimientoCajaDesdeVenta($venta, $data, $metodosPagoDetalle, $ventaPayload['metodos_pago'] ?? null);
+
             // NUEVO: Si el método de pago principal es Cheque, crear registro en tabla `cheques`
             try {
                 if (Schema::hasTable('cheques')) {
@@ -567,7 +637,9 @@ class VentasController extends Controller
                                 // Por defecto lo tratamos como Recibidos (pago recibido)
                                 'tipo' => 'Recibidos',
                                 'fecha_emision' => $venta->fecha ?? $data['fecha'] ?? now()->toDateString(),
-                                'fecha_cobro' => null,
+                                // NUEVO: fecha de cobro/corte enviada desde ventas
+                                'fecha_cobro' => $data['fecha_cobro'] ?? ($data['fechaCobro'] ?? ($data['fecha_cobro_cheque'] ?? null)),
+                                'fecha_cobro' => $data['fecha_cobro'] ?? ($data['fechaCobro'] ?? ($data['fecha_cobro_cheque'] ?? null)),
                                 // Mostrar la sucursal como origen en el módulo de cheques
                                 'beneficiario' => (string)($ventaPayload['sucursal_nombre'] ?? $data['sucursal_nombre'] ?? $venta->sucursal_nombre ?? $ventaPayload['sucursal_id'] ?? $data['sucursal_id'] ?? 'Sucursal'),
                                 'concepto' => (string)('Venta ' . (($venta->documentoVenta ?? '') ? ($venta->documentoVenta . ' ') : '') . ($venta->folioVenta ?? $venta->id)),
@@ -948,6 +1020,286 @@ class VentasController extends Controller
     }
 
     /**
+     * Crear movimiento de caja (registro NUEVO) cuando se CREA una venta cuyo método principal sea Efectivo.
+     * Nota: Para EDICIÓN usar syncMovimientoCajaDesdeVenta() para no duplicar.
+     */
+    protected function registrarMovimientoCajaDesdeVenta($venta, $data, $metodosPagoDetalle, $metodoEnum): void
+    {
+        try {
+            if (!Schema::hasTable('movimientos_caja')) return;
+
+            $tipoRaw = null;
+            if (is_array($metodosPagoDetalle) && !empty($metodosPagoDetalle[0]['tipo'])) {
+                $tipoRaw = strtolower(trim((string)$metodosPagoDetalle[0]['tipo']));
+            } elseif (!empty($data['metodo_pago'])) {
+                $tipoRaw = strtolower(trim((string)$data['metodo_pago']));
+            } elseif (!empty($metodoEnum)) {
+                $tipoRaw = strtolower(trim((string)$metodoEnum));
+            }
+
+            if (!$tipoRaw || strpos($tipoRaw, 'efectivo') === false) return;
+
+            $ventaId = (int)($venta->id ?? 0);
+            if ($ventaId <= 0) return;
+
+            $monto = (float)($data['total'] ?? $venta->total ?? 0);
+            if ($monto <= 0) return;
+
+            $ventaIdTag = 'ORIGEN:VENTA | VENTA_ID:' . $ventaId;
+
+            // caja_id: si viene del request úsala; si no, primera caja; si no, 1
+            $cajaId = $data['caja_id'] ?? $data['cajaId'] ?? null;
+            if (!$cajaId && Schema::hasTable('caja_efectivo')) {
+                $cajaId = DB::table('caja_efectivo')->value('id');
+            }
+            $cajaId = (int)($cajaId ?: 1);
+
+            $cols = Schema::getColumnListing('movimientos_caja');
+            $pick = function(array $candidates) use ($cols) {
+                foreach ($candidates as $c) if (in_array($c, $cols, true)) return $c;
+                foreach ($cols as $col) foreach ($candidates as $c) if (stripos($col, $c) !== false) return $col;
+                return null;
+            };
+
+            $fechaCol = $pick(['fecha', 'date', 'fecha_mov']);
+            $tipoCol = $pick(['tipo_movimiento', 'tipo', 'movement_type', 'type']);
+            $montoCol = $pick(['monto', 'valor', 'importe', 'amount']);
+            $cajaIdCol = $pick(['caja_id', 'caja', 'cashbox']);
+            $userIdCol = $pick(['user_id', 'usuario_id', 'usuario', 'user']);
+            $sucursalIdCol = $pick(['sucursal_id', 'sucursal', 'branch_id']);
+            $detalleCol = $pick(['detalle', 'descripcion', 'concepto', 'detalle_mov', 'descripcion_mov']);
+            $obsCol = $pick(['observaciones', 'observacion', 'notes', 'notas', 'nota']);
+
+            $descripcion = 'Venta ' . (($venta->documentoVenta ?? '') ? ($venta->documentoVenta . ' ') : '') . ($venta->folioVenta ?? $ventaId);
+
+            $payload = [];
+            if ($cajaIdCol) $payload[$cajaIdCol] = $cajaId;
+            if ($userIdCol) $payload[$userIdCol] = auth()->id();
+            if ($sucursalIdCol) $payload[$sucursalIdCol] = $data['sucursal_id'] ?? ($venta->sucursal_id ?? null);
+            if ($fechaCol) $payload[$fechaCol] = $data['fecha'] ?? ($venta->fecha ?? now()->toDateString());
+            if ($tipoCol) $payload[$tipoCol] = 'INGRESO';
+            if ($montoCol) $payload[$montoCol] = $monto;
+            if ($detalleCol) $payload[$detalleCol] = $descripcion;
+            if (in_array('origen', $cols, true)) $payload['origen'] = 'VENTAS';
+
+            if ($obsCol) {
+                $obs = (string)($data['observaciones'] ?? $venta->observaciones ?? '');
+                $obsLower = strtolower($obs);
+                if (strpos($obsLower, 'venta_id:') === false && strpos($obsLower, 'origen:venta') === false) {
+                    $obs = trim(($obs ? ($obs . ' | ') : '') . $ventaIdTag);
+                }
+                $payload[$obsCol] = $obs;
+            }
+
+            if (in_array('created_at', $cols, true)) $payload['created_at'] = now();
+            if (in_array('updated_at', $cols, true)) $payload['updated_at'] = now();
+
+            $newId = DB::table('movimientos_caja')->insertGetId($payload);
+
+            // Guardar mapeo determinista
+            try {
+                $mapDir = storage_path('app/venta_movimiento_caja');
+                if (!file_exists($mapDir)) @mkdir($mapDir, 0755, true);
+                $mapFile = $mapDir . DIRECTORY_SEPARATOR . $ventaId . '.json';
+                file_put_contents($mapFile, json_encode([
+                    'venta_id' => $ventaId,
+                    'movimiento_caja_id' => (int)$newId,
+                    'updated_at' => now()->toDateTimeString(),
+                ], JSON_UNESCAPED_UNICODE));
+            } catch (\Throwable $__) {}
+
+            try { CajaSaldoService::recomputeSaldoActual($cajaId); } catch (\Throwable $__) {}
+        } catch (\Throwable $e) {
+            try { Log::warning('VentasController: no se pudo crear movimiento de caja desde venta', ['error' => $e->getMessage(), 'venta_id' => $venta->id ?? null]); } catch (\Throwable $__) {}
+        }
+    }
+
+    /**
+     * Sincroniza (upsert) el movimiento de caja asociado a una venta cuando el método principal es Efectivo.
+     * - Si existe un movimiento con tag ORIGEN:VENTA | VENTA_ID:<id> y está activo: lo actualiza.
+     * - Si no existe: lo crea.
+     * - Si la venta deja de ser Efectivo: soft-delete/elimina el movimiento asociado.
+     */
+    protected function syncMovimientoCajaDesdeVenta($venta, $data, $metodosPagoDetalle, $metodoEnum): void
+    {
+        try {
+            if (!Schema::hasTable('movimientos_caja')) return;
+
+            // Determinar si la venta es EFECTIVO
+            $tipoRaw = null;
+            if (is_array($metodosPagoDetalle) && !empty($metodosPagoDetalle[0]['tipo'])) {
+                $tipoRaw = strtolower(trim((string)$metodosPagoDetalle[0]['tipo']));
+            } elseif (!empty($data['metodo_pago'])) {
+                $tipoRaw = strtolower(trim((string)$data['metodo_pago']));
+            } elseif (!empty($metodoEnum)) {
+                $tipoRaw = strtolower(trim((string)$metodoEnum));
+            }
+            $esEfectivo = $tipoRaw && (strpos($tipoRaw, 'efectivo') !== false);
+
+            $ventaId = (int)($venta->id ?? 0);
+            if ($ventaId <= 0) return;
+
+            // Tag canónico (respaldo y trazabilidad humana)
+            $ventaIdTag = 'ORIGEN:VENTA | VENTA_ID:' . $ventaId;
+
+            $cols = Schema::getColumnListing('movimientos_caja');
+            $pick = function(array $candidates) use ($cols) {
+                foreach ($candidates as $c) if (in_array($c, $cols, true)) return $c;
+                foreach ($cols as $col) foreach ($candidates as $c) if (stripos($col, $c) !== false) return $col;
+                return null;
+            };
+
+            $obsCol = $pick(['observaciones', 'observacion', 'notes', 'notas', 'nota']);
+            $detalleCol = $pick(['detalle', 'descripcion', 'concepto', 'detalle_mov', 'descripcion_mov']);
+            $fechaCol = $pick(['fecha', 'date', 'fecha_mov']);
+            $tipoCol = $pick(['tipo_movimiento', 'tipo', 'movement_type', 'type']);
+            $montoCol = $pick(['monto', 'valor', 'importe', 'amount']);
+            $cajaIdCol = $pick(['caja_id', 'caja', 'cashbox']);
+            $userIdCol = $pick(['user_id', 'usuario_id', 'usuario', 'user']);
+            $sucursalIdCol = $pick(['sucursal_id', 'sucursal', 'branch_id']);
+
+            // caja_id: si viene del request úsala; si no, primera caja; si no, 1
+            $cajaId = $data['caja_id'] ?? $data['cajaId'] ?? null;
+            if (!$cajaId && Schema::hasTable('caja_efectivo')) {
+                $cajaId = DB::table('caja_efectivo')->value('id');
+            }
+            $cajaId = (int)($cajaId ?: 1);
+
+            // --- MEJOR SOLUCIÓN (sin migración): mapeo determinista en storage ---
+            // File: storage/app/venta_movimiento_caja/{venta_id}.json
+            $mapDir = storage_path('app/venta_movimiento_caja');
+            $mapFile = $mapDir . DIRECTORY_SEPARATOR . $ventaId . '.json';
+            $mappedId = null;
+            try {
+                if (file_exists($mapFile)) {
+                    $j = json_decode((string)file_get_contents($mapFile), true);
+                    if (is_array($j) && !empty($j['movimiento_caja_id'])) $mappedId = (int)$j['movimiento_caja_id'];
+                }
+            } catch (\Throwable $__) {
+                $mappedId = null;
+            }
+
+            $deleteMovimientoById = function(?int $id) use ($cols) {
+                if (!$id) return;
+                $q = DB::table('movimientos_caja')->where('id', $id);
+                if (in_array('deleted_at', $cols, true)) {
+                    $payload = ['deleted_at' => now()];
+                    if (in_array('updated_at', $cols, true)) $payload['updated_at'] = now();
+                    $q->update($payload);
+                } else {
+                    $q->delete();
+                }
+            };
+
+            $deleteMovimientosByTag = function() use ($obsCol, $ventaIdTag, $cols) {
+                if (empty($obsCol)) return;
+                $q = DB::table('movimientos_caja')->where($obsCol, 'like', '%' . $ventaIdTag . '%');
+                if (in_array('deleted_at', $cols, true)) {
+                    $payload = ['deleted_at' => now()];
+                    if (in_array('updated_at', $cols, true)) $payload['updated_at'] = now();
+                    $q->update($payload);
+                } else {
+                    $q->delete();
+                }
+            };
+
+            // Si deja de ser efectivo: borrar el movimiento asociado (por mapeo o por tag) y limpiar mapeo.
+            if (!$esEfectivo) {
+                try {
+                    if ($mappedId) {
+                        $deleteMovimientoById($mappedId);
+                    } else {
+                        $deleteMovimientosByTag();
+                    }
+                } catch (\Throwable $__) {
+                }
+                try {
+                    if (file_exists($mapFile)) @unlink($mapFile);
+                } catch (\Throwable $__) {
+                }
+                try { CajaSaldoService::recomputeSaldoActual($cajaId); } catch (\Throwable $__) {}
+                return;
+            }
+
+            $monto = (float)($data['total'] ?? $venta->total ?? 0);
+            $descripcion = 'Venta ' . (($venta->documentoVenta ?? '') ? ($venta->documentoVenta . ' ') : '') . ($venta->folioVenta ?? $ventaId);
+
+            $payload = [];
+            if ($cajaIdCol) $payload[$cajaIdCol] = $cajaId;
+            if ($userIdCol) $payload[$userIdCol] = auth()->id();
+            if ($sucursalIdCol) $payload[$sucursalIdCol] = $data['sucursal_id'] ?? ($venta->sucursal_id ?? null);
+            if ($fechaCol) $payload[$fechaCol] = $data['fecha'] ?? ($venta->fecha ?? now()->toDateString());
+            if ($tipoCol) $payload[$tipoCol] = 'INGRESO';
+            if ($montoCol) $payload[$montoCol] = $monto;
+            if ($detalleCol) $payload[$detalleCol] = $descripcion;
+            if (in_array('origen', $cols, true)) $payload['origen'] = 'VENTAS';
+
+            if ($obsCol) {
+                $obs = (string)($data['observaciones'] ?? $venta->observaciones ?? '');
+                $obsLower = strtolower($obs);
+                if (strpos($obsLower, 'venta_id:') === false && strpos($obsLower, 'origen:venta') === false) {
+                    $obs = trim(($obs ? ($obs . ' | ') : '') . $ventaIdTag);
+                }
+                $payload[$obsCol] = $obs;
+            }
+
+            if (in_array('updated_at', $cols, true)) $payload['updated_at'] = now();
+
+            // NUEVA POLÍTICA: EDITAR el mismo registro (no eliminar + insertar)
+            $targetId = $mappedId;
+
+            // Si no hay mapeo, intentar resolver determinísticamente por tag (solo en obsCol)
+            if (!$targetId && !empty($obsCol)) {
+                try {
+                    $q = DB::table('movimientos_caja')->where($obsCol, 'like', '%' . $ventaIdTag . '%');
+                    if (in_array('deleted_at', $cols, true)) $q->whereNull('deleted_at');
+                    $found = $q->orderByDesc('id')->first();
+                    if ($found && !empty($found->id)) {
+                        $targetId = (int)$found->id;
+                    }
+                } catch (\Throwable $__) {
+                    $targetId = null;
+                }
+            }
+
+            if ($targetId) {
+                // Reactivar si estaba soft-deleted
+                if (in_array('deleted_at', $cols, true)) $payload['deleted_at'] = null;
+
+                DB::table('movimientos_caja')->where('id', $targetId)->update($payload);
+
+                // Guardar/actualizar mapeo
+                try {
+                    if (!file_exists($mapDir)) @mkdir($mapDir, 0755, true);
+                    file_put_contents($mapFile, json_encode([
+                        'venta_id' => $ventaId,
+                        'movimiento_caja_id' => (int)$targetId,
+                        'updated_at' => now()->toDateTimeString(),
+                    ], JSON_UNESCAPED_UNICODE));
+                } catch (\Throwable $__) {
+                }
+            } else {
+                // IMPORTANTE: en edición NO crear movimientos nuevos.
+                // Si no encontramos el movimiento asociado de forma determinista, salimos.
+                try {
+                    Log::warning('VentasController: no se encontró movimiento_caja asociado para actualizar; se evita crear uno nuevo', [
+                        'venta_id' => $ventaId,
+                        'tag' => $ventaIdTag,
+                        'mappedId' => $mappedId,
+                        'obsCol' => $obsCol,
+                    ]);
+                } catch (\Throwable $__) {}
+                return;
+            }
+
+            try { CajaSaldoService::recomputeSaldoActual($cajaId); } catch (\Throwable $__) {}
+            return;
+        } catch (\Throwable $e) {
+            try { Log::warning('VentasController: no se pudo sincronizar movimiento de caja desde venta', ['error' => $e->getMessage(), 'venta_id' => $venta->id ?? null]); } catch (\Throwable $__) {}
+        }
+    }
+
+    /**
      * Determina si una venta (Crédito/Deuda) tiene pagos aplicados.
      *
      * Nota: en este sistema, las ventas a crédito se reflejan como cuentas y los pagos
@@ -1165,6 +1517,14 @@ class VentasController extends Controller
                 Log::warning('VentasController@update: error sincronizando cheque', ['error' => $e->getMessage(), 'venta_id' => $venta->id]);
             }
 
+            // NUEVO: sincronizar movimiento de caja (Efectivo) al editar venta
+            try {
+                // Antes: registrarMovimientoCajaDesdeVenta(...) insertaba uno nuevo
+                $this->syncMovimientoCajaDesdeVenta($venta, array_merge($data, $updatePayload), $metodosPagoDetalle, $updatePayload['metodos_pago'] ?? null);
+            } catch (\Throwable $e) {
+                Log::warning('VentasController@update: error sincronizando movimiento de caja', ['error' => $e->getMessage(), 'venta_id' => $venta->id]);
+            }
+
             // Adjuntar métodos de pago persistidos (si existen) al objeto devuelto
             try {
                 $venta = $venta->load('detalles');
@@ -1322,6 +1682,17 @@ class VentasController extends Controller
             } catch (\Throwable $e) {
                 // no abortar eliminación de venta por fallo al borrar cheque, pero dejar log
                 try { Log::warning('VentasController@destroy: no se pudo eliminar cheque asociado', ['error' => $e->getMessage(), 'venta_id' => $venta->id]); } catch (\Throwable $__){ }
+            }
+
+            // NUEVO: si es venta con movimiento de caja (Efectivo), al eliminar desde ventas eliminar también el registro en movimientos_caja
+            try {
+                $rawMetodo = strtolower(trim((string)($venta->metodos_pago ?? '')));
+                if ($rawMetodo !== '' && strpos($rawMetodo, 'efectivo') !== false) {
+                    $this->eliminarMovimientoCajaAsociadoAVentaSiExiste($venta);
+                }
+            } catch (\Throwable $e) {
+                // no abortar eliminación de venta por fallo al borrar movimiento de caja, pero dejar log
+                try { Log::warning('VentasController@destroy: no se pudo eliminar movimiento de caja asociado', ['error' => $e->getMessage(), 'venta_id' => $venta->id]); } catch (\Throwable $__){ }
             }
 
             // Soft delete de la venta (modelo ya maneja detalles)

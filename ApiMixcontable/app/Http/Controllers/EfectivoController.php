@@ -334,6 +334,21 @@ class EfectivoController extends Controller
     // Actualizar movimiento existente
     public function update(Request $request, $id)
     {
+        $cols = Schema::getColumnListing('movimientos_caja');
+
+        // Bloquear edición si el movimiento proviene de otro módulo
+        try {
+            $mov = DB::table('movimientos_caja')->where('id', $id)->first();
+            if ($mov && $this->movimientoProvieneDeOtroModulo($mov)) {
+                return response()->json([
+                    'message' => 'Este movimiento proviene de otro módulo y no se puede editar desde Efectivo. Debe gestionarse desde su módulo de origen (por ejemplo, Ventas).',
+                    'code' => 'MOVIMIENTO_ORIGEN_NO_EDITABLE',
+                ], 409);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('EfectivoController.update: no se pudo validar origen del movimiento', ['error' => $e->getMessage(), 'id' => $id]);
+        }
+
         $data = $request->validate([
             'fecha' => ['nullable', 'date'],
             'detalle' => ['nullable', 'string'],
@@ -343,8 +358,6 @@ class EfectivoController extends Controller
             'sucursal' => ['nullable'],
             'usuario' => ['nullable']
         ]);
-
-        $cols = Schema::getColumnListing('movimientos_caja');
 
         $pick = function(array $candidates) use ($cols) {
             foreach ($candidates as $c) {
@@ -442,10 +455,74 @@ class EfectivoController extends Controller
         return response()->json(['data' => $mov]);
     }
 
+    /**
+     * Determina si un movimiento de caja proviene de otro módulo.
+     * Criterio: tags en texto (observaciones/detalle/descripcion/concepto) tipo "ORIGEN:...".
+     */
+    private function movimientoProvieneDeOtroModulo($mov): bool
+    {
+        if (!$mov) return false;
+
+        // Si existe un campo explícito "origen" (p.ej. CXC), usarlo como señal fuerte.
+        if (isset($mov->origen) && $mov->origen !== null) {
+            $origen = strtoupper(trim((string)$mov->origen));
+            if ($origen !== '' && $origen !== 'MANUAL' && $origen !== 'EFECTIVO') {
+                // Ej: CXC, VENTAS, CHEQUES, COMPRAS...
+                return true;
+            }
+            if ($origen === 'CXC') return true;
+        }
+
+        $text = '';
+        foreach (['observaciones', 'observacion', 'detalle', 'descripcion', 'concepto', 'nota', 'notas', 'notes'] as $k) {
+            if (isset($mov->{$k}) && $mov->{$k} !== null && trim((string)$mov->{$k}) !== '') {
+                $text = (string)$mov->{$k};
+                break;
+            }
+        }
+
+        $t = strtolower($text);
+
+        // Regla general: cualquier ORIGEN:XXX indica que el movimiento fue generado por otro módulo.
+        if (strpos($t, 'origen:') !== false) return true;
+
+        // CxC: tags usados por CuentasCobrarController
+        if (strpos($t, 'cxc_id:') !== false) return true;
+
+        // Compatibilidad por si existen tags antiguos sin "origen:" explícito
+        $fallbackTokens = [
+            'venta_id:',
+            'cheque_id:',
+            'compra_id:',
+            'gasto_id:',
+            'nomina_id:',
+            'transferencia_id:',
+        ];
+        foreach ($fallbackTokens as $tok) {
+            if (strpos($t, $tok) !== false) return true;
+        }
+
+        return false;
+    }
+
     // Eliminar (soft-delete si existe deleted_at)
     public function destroy($id)
     {
         $cols = Schema::getColumnListing('movimientos_caja');
+
+        // Bloquear eliminación si el movimiento proviene de otro módulo
+        try {
+            $mov = DB::table('movimientos_caja')->where('id', $id)->first();
+            if ($mov && $this->movimientoProvieneDeOtroModulo($mov)) {
+                return response()->json([
+                    'message' => 'Este movimiento proviene de otro módulo y no se puede eliminar desde Efectivo. Debe gestionarse desde su módulo de origen.',
+                    'code' => 'MOVIMIENTO_ORIGEN_NO_ELIMINABLE',
+                ], 409);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('EfectivoController.destroy: no se pudo validar origen del movimiento', ['error' => $e->getMessage(), 'id' => $id]);
+            // si falla la validación, no bloqueamos para no romper operación en instalaciones antiguas
+        }
 
         // intentar capturar caja_id antes de borrar
         $cajaId = 1;

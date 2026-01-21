@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Log;
 use App\Models\Cheque;
 
 class ChequeController extends Controller
@@ -175,6 +176,107 @@ class ChequeController extends Controller
         return response()->json(['data' => $item]);
     }
 
+    /**
+     * Crear o reactivar movimiento bancario para un cheque usando columnas reales.
+     * Reglas:
+     * - Si existe movimiento activo para cheque_id: actualizar datos.
+     * - Si existe solo soft-deleted: reactivar (deleted_at = NULL) y actualizar.
+     * - Si no existe: insertar.
+     */
+    private function upsertMovimientoBancoPorCheque(Cheque $cheque): void
+    {
+        if (!Schema::hasTable('movimientos_banco')) return;
+
+        $cols = Schema::getColumnListing('movimientos_banco');
+        $required = ['cheque_id', 'cuenta_id', 'fecha', 'monto', 'tipo_movimiento'];
+        foreach ($required as $r) {
+            if (!in_array($r, $cols, true)) {
+                Log::warning('ChequeController: movimientos_banco sin columna requerida', ['missing' => $r, 'cols' => $cols]);
+                return;
+            }
+        }
+
+        if (empty($cheque->cuenta_id)) {
+            Log::warning('ChequeController: cheque sin cuenta_id, no se puede reflejar en banco', ['cheque_id' => $cheque->id]);
+            return;
+        }
+
+        $tipoMov = 'INGRESO';
+        $tipoCheque = strtolower(trim((string)($cheque->tipo ?? '')));
+        if (strpos($tipoCheque, 'emit') !== false) $tipoMov = 'EGRESO';
+
+        $fechaValue = $cheque->fecha_cobro ?: now()->toDateString();
+        $montoValue = (float)($cheque->monto ?? 0);
+
+        // Preparar payload usando SOLO columnas existentes
+        $data = [
+            'cheque_id' => (int)$cheque->id,
+            'cuenta_id' => (int)$cheque->cuenta_id,
+            'fecha' => $fechaValue,
+            'monto' => $montoValue,
+            'tipo_movimiento' => $tipoMov,
+        ];
+
+        if (in_array('descripcion', $cols, true)) {
+            $data['descripcion'] = 'Cobro de cheque N° ' . (string)($cheque->numero_cheque ?? $cheque->id);
+        }
+        if (in_array('categoria', $cols, true)) {
+            $data['categoria'] = 'Cheque';
+        }
+        if (in_array('observaciones', $cols, true)) {
+            $data['observaciones'] = trim((string)($cheque->observaciones ?? ''));
+        }
+        if (in_array('referencia', $cols, true)) {
+            $data['referencia'] = (string)($cheque->numero_cheque ?? $cheque->id);
+        }
+        if (in_array('user_id', $cols, true)) {
+            $authId = auth()->id();
+            if ($authId) $data['user_id'] = $authId;
+        }
+        if (in_array('updated_at', $cols, true)) $data['updated_at'] = now();
+        if (in_array('deleted_at', $cols, true)) $data['deleted_at'] = null;
+
+        // Elegir registro a afectar: primero activo, si no, el último eliminado
+        $targetId = DB::table('movimientos_banco')
+            ->where('cheque_id', (int)$cheque->id)
+            ->when(in_array('deleted_at', $cols, true), fn($q) => $q->whereNull('deleted_at'))
+            ->value('id');
+
+        if (!$targetId && in_array('deleted_at', $cols, true)) {
+            $targetId = DB::table('movimientos_banco')
+                ->where('cheque_id', (int)$cheque->id)
+                ->whereNotNull('deleted_at')
+                ->orderByDesc('id')
+                ->value('id');
+        }
+
+        if ($targetId) {
+            Log::info('ChequeController: update movimiento_banco por cheque', ['id' => $targetId, 'cheque_id' => $cheque->id]);
+            DB::table('movimientos_banco')->where('id', (int)$targetId)->update($data);
+            return;
+        }
+
+        // Insert
+        if (in_array('created_at', $cols, true)) $data['created_at'] = now();
+        Log::info('ChequeController: insert movimiento_banco por cheque', ['cheque_id' => $cheque->id]);
+        DB::table('movimientos_banco')->insert($data);
+    }
+
+    private function softDeleteMovimientoBancoPorCheque(Cheque $cheque): void
+    {
+        if (!Schema::hasTable('movimientos_banco')) return;
+        $cols = Schema::getColumnListing('movimientos_banco');
+        if (!in_array('cheque_id', $cols, true) || !in_array('deleted_at', $cols, true)) return;
+
+        $update = ['deleted_at' => now()];
+        if (in_array('updated_at', $cols, true)) $update['updated_at'] = now();
+
+        DB::table('movimientos_banco')
+            ->where('cheque_id', (int)$cheque->id)
+            ->whereNull('deleted_at')
+            ->update($update);
+    }
+
     public function update(Request $request, $id)
     {
         // Para rechazar/editar NO se debe tocar deleted_at, por eso NO usamos delete aquí.
@@ -183,6 +285,8 @@ class ChequeController extends Controller
         if (!$cheque) {
             return response()->json(['message' => 'Cheque no encontrado'], 404);
         }
+
+        $prevEstado = strtolower(trim((string)($cheque->estado ?? '')));
 
         $data = $request->validate([
             'cuenta_id' => ['nullable','integer'],
@@ -270,6 +374,22 @@ class ChequeController extends Controller
 
         $cheque->update($data);
 
+        // Solución alternativa determinística (sin heurísticas): upsert/soft-delete
+        try {
+            $newEstado = strtolower(trim((string)($cheque->estado ?? '')));
+            if ($prevEstado !== 'cobrado' && $newEstado === 'cobrado') {
+                $this->upsertMovimientoBancoPorCheque($cheque);
+            }
+            if ($prevEstado === 'cobrado' && $newEstado !== 'cobrado') {
+                $this->softDeleteMovimientoBancoPorCheque($cheque);
+            }
+        } catch (\Throwable $e) {
+            Log::error('ChequeController.update: error al gestionar movimiento banco (alt)', [
+                'message' => $e->getMessage(),
+                'cheque_id' => $cheque->id ?? null,
+            ]);
+        }
+
         return response()->json(['data' => $cheque]);
     }
 
@@ -300,12 +420,27 @@ class ChequeController extends Controller
             return response()->json(['message' => 'Cheque no encontrado'], 404);
         }
 
+        // Si ya está cobrado, no repetir movimiento
+        if (strtolower(trim((string)$cheque->estado)) === 'cobrado') {
+            return response()->json(['data' => $cheque]);
+        }
+
         // Cambiar estado a Cobrado
         $cheque->estado = 'Cobrado';
         if ($request->filled('fecha_cobro')) {
             $cheque->fecha_cobro = $request->get('fecha_cobro');
         }
         $cheque->save();
+
+        // Registrar movimiento bancario de forma determinística
+        try {
+            $this->upsertMovimientoBancoPorCheque($cheque);
+        } catch (\Throwable $e) {
+            Log::error('ChequeController.cobrar: error al gestionar movimiento banco (alt)', [
+                'message' => $e->getMessage(),
+                'cheque_id' => $cheque->id ?? null,
+            ]);
+        }
 
         return response()->json(['data' => $cheque]);
     }

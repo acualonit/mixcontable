@@ -130,6 +130,14 @@ export const updateCliente = (clienteId, payload) => request(`/clientes/${client
 
 export const inactivateCliente = (clienteId) => request(`/clientes/${clienteId}`, { method: 'DELETE' });
 
+// Buscar clientes por texto (razón social, nombre fantasía o rut)
+export const searchClientes = async (q, { limit = 20 } = {}) => {
+  const query = new URLSearchParams();
+  if (q) query.set('q', q);
+  if (limit) query.set('limit', String(limit));
+  return request(`/clientes${query.toString() ? `?${query.toString()}` : ''}`);
+};
+
 // Proveedores
 export const fetchProveedores = () => request('/proveedores');
 export const createProveedor = (payload) => request('/proveedores', { method: 'POST', body: payload });

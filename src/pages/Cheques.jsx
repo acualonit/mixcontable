@@ -68,19 +68,7 @@ function Cheques() {
 
   const handleCobrarCheque = async (cheque) => {
     try {
-      // Registrar movimiento bancario (si aplica)
-      await registrarMovimientoBancario({
-        fecha: new Date().toISOString().split('T')[0],
-        tipo: cheque.tipo === 'emitido' ? 'egreso' : 'ingreso',
-        monto: cheque.monto,
-        detalle: `${cheque.tipo === 'emitido' ? 'Cobro de cheque emitido' : 'Cobro de cheque recibido'} N° ${cheque.numero}`,
-        banco: cheque.banco,
-        referencia: cheque.numero,
-        categoria: 'Cheque',
-        sucursal: cheque.sucursal || cheque.raw?.sucursal || ''
-      });
-
-      // Marcar como cobrado en servidor
+      // El movimiento bancario se crea/reactiva en el backend al cobrar el cheque.
       if (cheque.id) {
         await chequesApi.cobrarCheque(cheque.id, { fecha_cobro: new Date().toISOString().slice(0, 10) });
       }
