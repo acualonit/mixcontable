@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { registrarMovimientoEfectivo } from '../../utils/efectivoUtils';
 import { createMovimientoBanco, fetchCuentas } from '../../utils/bancoApi';
+import ventasApi from '../../utils/ventasApi';
 
 function PagoCuentaCobrar({ cuenta, onClose, onSave }) {
   const [formData, setFormData] = useState({
@@ -10,7 +11,8 @@ function PagoCuentaCobrar({ cuenta, onClose, onSave }) {
       tipo: 'efectivo',
       numeroVoucher: '',
       numeroCheque: '',
-      fechaCobroCheque: ''
+      fechaCobroCheque: '',
+      cuenta_bancaria_id: ''
     },
     incluirFlujoCaja: true,
     observaciones: ''
@@ -35,6 +37,35 @@ function PagoCuentaCobrar({ cuenta, onClose, onSave }) {
     })();
   }, []);
 
+  // Resolver automáticamente la cuenta bancaria asociada a la sucursal de la venta
+  // cuando el modal se abre o cambia la cuenta seleccionada. Se guarda en
+  // formData.metodoPago.cuenta_bancaria_id pero NO se muestra en la UI (campo oculto).
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        // Si la cuenta proviene de una venta, extraer ventaId y pedir detalle
+        if (cuenta?.origen === 'Venta' && String(cuenta.id).startsWith('venta-')) {
+          const ventaId = Number(String(cuenta.id).replace(/^venta-/, ''));
+          if (!isNaN(ventaId) && ventaId > 0) {
+            try {
+              const ventaDetalle = await ventasApi.getVenta(ventaId);
+              const cuentaIdFromVenta = ventaDetalle?.cuenta_bancaria_id ?? ventaDetalle?.cuenta_bancaria ?? null;
+              if (mounted && cuentaIdFromVenta) {
+                setFormData(fd => ({ ...fd, metodoPago: { ...fd.metodoPago, cuenta_bancaria_id: cuentaIdFromVenta } }));
+              }
+            } catch (e) {
+              // ignore failure to fetch venta
+            }
+          }
+        } else if (cuenta?.cuenta_bancaria_id) {
+          // Si la cuenta ya incluye cuenta_bancaria_id, usarla
+          if (mounted) setFormData(fd => ({ ...fd, metodoPago: { ...fd.metodoPago, cuenta_bancaria_id: cuenta.cuenta_bancaria_id } }));
+        }
+      } catch (e) { /* ignore */ }
+    })();
+    return () => { mounted = false; };
+  }, [cuenta]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -126,6 +157,8 @@ function PagoCuentaCobrar({ cuenta, onClose, onSave }) {
 
               {formData.metodoPago.tipo === 'cheque' && (
                 <>
+                  {/* Campo oculto con la cuenta bancaria resuelta automáticamente */}
+                  <input type="hidden" value={formData.metodoPago.cuenta_bancaria_id || ''} />
                   <div className="mb-3">
                     <label className="form-label">Número de Cheque</label>
                     <input

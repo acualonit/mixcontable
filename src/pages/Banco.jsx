@@ -159,11 +159,19 @@ function Banco() {
               desc.includes('cobro cuenta por cobrar')
             );
 
+            // Detectar si viene de cheque: cheque_id explicitado o tags en obs/ref/desc
+            const fromChequeReal = Boolean(
+              (m.cheque_id && Number(m.cheque_id) > 0) ||
+              obs.includes('cheque:') || obs.includes('cheque_id:') || obs.includes('origen:cheque') ||
+              ref.includes('cheque:') || desc.includes('cheque:') ||
+              /cheque\s*#?\s*\d+/.test(obs + ' ' + ref + ' ' + desc)
+            );
+
             // marca sintética (representación, no un movimiento persistente) — dejar falso por defecto
             const synthetic = Boolean(desc.includes('venta resumen') || desc.includes('ventas con metodos bancarios'));
 
-            return { ...m, __fromVentaReal: fromVentaReal, __syntheticFromVenta: synthetic };
-          } catch (e) { return { ...m, __fromVentaReal: false, __syntheticFromVenta: false }; }
+            return { ...m, __fromVentaReal: fromVentaReal, __fromChequeReal: fromChequeReal, __syntheticFromVenta: synthetic };
+          } catch (e) { return { ...m, __fromVentaReal: false, __fromChequeReal: false, __syntheticFromVenta: false }; }
         });
 
         setMovimientos(mergedWithFlags);
@@ -500,10 +508,10 @@ function Banco() {
                               Conciliar
                             </button>
                           </>
-                        ) : movimiento.__fromVentaReal ? (
-                          // Movimiento REAL ya generado por venta -> no editable ni eliminable desde aquí
+                        ) : (movimiento.__fromVentaReal || movimiento.__fromChequeReal) ? (
+                          // Movimiento REAL ya generado por venta o por cheque -> no editable ni eliminable desde aquí
                           <>
-                            <button className="btn btn-sm btn-secondary" title="Movimiento generado automáticamente por una venta; edición deshabilitada">
+                            <button className="btn btn-sm btn-secondary" title={movimiento.__fromChequeReal ? "Movimiento generado automáticamente por un cheque; edición deshabilitada" : "Movimiento generado automáticamente por una venta; edición deshabilitada"}>
                               <i className="bi bi-lock-fill"></i>
                             </button>
                           </>

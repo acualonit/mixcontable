@@ -170,6 +170,7 @@ Route::middleware('session')->group(function () {
         Route::get('/cheques', [ChequeController::class, 'index']);
         Route::post('/cheques', [ChequeController::class, 'store']);
         Route::get('/cheques/{id}', [ChequeController::class, 'show']);
+        Route::get('/cheques/{id}/movimientos', [ChequeController::class, 'movimientos']);
         Route::put('/cheques/{id}', [ChequeController::class, 'update']);
         Route::delete('/cheques/{id}', [ChequeController::class, 'destroy']);
         Route::post('/cheques/{id}/cobrar', [ChequeController::class, 'cobrar']);

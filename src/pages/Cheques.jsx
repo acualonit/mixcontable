@@ -66,6 +66,17 @@ function Cheques() {
     return obs.includes('origen:venta');
   };
 
+  // Nuevo: detectar si el cheque está vinculado a CxC (para evitar eliminar/editar completos)
+  const isChequeFromCxc = (cheque) => {
+    try {
+      const obs = (cheque?.observaciones ?? cheque?.raw?.observaciones ?? cheque?.raw?.observacion ?? '').toString().toLowerCase();
+      const ref = (cheque?.raw?.referencia ?? cheque?.raw?.referencia ?? '')?.toString().toLowerCase() ?? '';
+      if (obs.includes('origen:cxc') || obs.includes('cxc_id:') || obs.includes('creado automaticamente') || obs.includes('creado automáticamente')) return true;
+      if (ref.includes('cxc_id:') || ref.includes('cxc:')) return true;
+      return false;
+    } catch (e) { return false; }
+  };
+
   const handleCobrarCheque = async (cheque) => {
     try {
       // El movimiento bancario se crea/reactiva en el backend al cobrar el cheque.
@@ -90,19 +101,29 @@ function Cheques() {
 
   const handleSave = async (formData) => {
     try {
-      // Mapear campos del formulario al payload esperado por el servidor
-      const payload = {
-        cuenta_id: formData.cuenta_id ? Number(formData.cuenta_id) : null,
-        numero_cheque: formData.numeroCheque,
-        tipo: formData.tipo || (tipoFiltro || 'emitido'),
-        fecha_emision: formData.fechaEmision,
-        fecha_cobro: formData.fechaCobro || null,
-        beneficiario: formData.origenDestino,
-        concepto: formData.concepto,
-        monto: Number(formData.monto) || 0,
-        observaciones: formData.observaciones || '',
-        estado: String(formData.estado || 'Pendiente'),
-      };
+      // Si formData viene como edición limitada (solo id, fecha_cobro, estado, user_id), enviar solo esos campos
+      const keys = Object.keys(formData || {});
+      const limitedKeys = ['id', 'fecha_cobro', 'estado', 'user_id'];
+      const isLimitedEdit = keys.length > 0 && keys.every(k => limitedKeys.includes(k));
+
+      let payload = {};
+      if (isLimitedEdit) {
+        if (formData.fecha_cobro !== undefined) payload.fecha_cobro = formData.fecha_cobro || null;
+        if (formData.estado !== undefined) payload.estado = formData.estado || null;
+        if (formData.user_id !== undefined) payload.user_id = formData.user_id || null;
+      } else {
+        // Construir payload incluyendo solo campos con valor definidio (no enviar nulls que rompan constraints)
+        if (formData.cuenta_id !== undefined && formData.cuenta_id !== '' && formData.cuenta_id !== null) payload.cuenta_id = Number(formData.cuenta_id);
+        if (formData.numeroCheque !== undefined && formData.numeroCheque !== '') payload.numero_cheque = formData.numeroCheque;
+        if (formData.tipo !== undefined && formData.tipo !== '') payload.tipo = formData.tipo || (tipoFiltro || 'emitido');
+        if (formData.fechaEmision !== undefined && formData.fechaEmision !== '') payload.fecha_emision = formData.fechaEmision;
+        if (formData.fechaCobro !== undefined && formData.fechaCobro !== '') payload.fecha_cobro = formData.fechaCobro;
+        if (formData.origenDestino !== undefined && formData.origenDestino !== '') payload.beneficiario = formData.origenDestino;
+        if (formData.concepto !== undefined && formData.concepto !== '') payload.concepto = formData.concepto;
+        if (formData.monto !== undefined && formData.monto !== '' && formData.monto !== null) payload.monto = Number(formData.monto) || 0;
+        if (formData.observaciones !== undefined && formData.observaciones !== '') payload.observaciones = formData.observaciones;
+        if (formData.estado !== undefined && formData.estado !== '') payload.estado = String(formData.estado || 'Pendiente');
+      }
 
       if (formData.id) {
         await chequesApi.updateCheque(formData.id, payload);
@@ -280,7 +301,7 @@ function Cheques() {
                             className="btn btn-sm btn-outline-danger"
                             onClick={() => handleDelete(c)}
                             title={fromVenta ? 'No eliminable: proviene de venta' : 'Eliminar'}
-                            disabled={fromVenta}
+                            disabled={fromVenta || isChequeFromCxc(c)}
                           >
                             <i className="bi bi-trash"></i>
                           </button>

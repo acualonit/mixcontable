@@ -17,6 +17,22 @@ function DetalleCheque({ cheque, onClose }) {
 
   const usuario = cheque?.usuario || cheque?.raw?.usuario_nombre || cheque?.raw?.usuario || cheque?.raw?.user || '—';
 
+  // Nuevo: cargar movimientos bancarios relacionados al cheque al render
+  const [movs, setMovs] = React.useState([]);
+  React.useEffect(() => {
+    let m = true;
+    (async () => {
+      try {
+        if (!cheque?.id) return;
+        const res = await fetch(`/api/cheques/${cheque.id}/movimientos`, { credentials: 'include' });
+        if (!res.ok) return;
+        const d = await res.json();
+        if (m) setMovs(d?.data || []);
+      } catch (e) { /* ignore */ }
+    })();
+    return () => { m = false; };
+  }, [cheque?.id]);
+
   return (
     <div
       className="modal fade show"
@@ -105,6 +121,47 @@ function DetalleCheque({ cheque, onClose }) {
                         </tbody>
                       </table>
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Nuevo: sección de movimientos bancarios relacionados */}
+              <div className="col-12">
+                <div className="card">
+                  <div className="card-header bg-light">
+                    <strong>Movimientos Bancarios Relacionados</strong>
+                  </div>
+                  <div className="card-body">
+                    {movs.length === 0 ? (
+                      <div>No hay movimientos relacionados a este cheque.</div>
+                    ) : (
+                      <div className="table-responsive">
+                        <table className="table table-sm table-bordered mb-0">
+                          <thead className="table-light">
+                            <tr>
+                              <th>ID</th>
+                              <th>Fecha</th>
+                              <th>Monto</th>
+                              <th>Cuenta</th>
+                              <th>Referencia</th>
+                              <th>Observaciones</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {movs.map(m => (
+                              <tr key={m.id}>
+                                <td>{m.id}</td>
+                                <td>{m.fecha || m.created_at || '-'}</td>
+                                <td>{m.monto ? `$${Number(m.monto).toLocaleString()}` : ''}</td>
+                                <td>{m.cuenta_id || m.cuenta || '-'}</td>
+                                <td>{m.referencia || '-'}</td>
+                                <td style={{ whiteSpace: 'pre-wrap' }}>{m.observaciones || '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

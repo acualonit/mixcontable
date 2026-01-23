@@ -93,6 +93,16 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
 
   const isEdit = Boolean(initialData?.id);
 
+  // Detectar si el cheque proviene de CxC (observaciones o raw) para limitar edición
+  const isFromCxc = React.useMemo(() => {
+    try {
+      const obs = (initialData?.observaciones || initialData?.raw?.observaciones || initialData?.raw?.observacion || '');
+      const low = (obs || '').toString().toLowerCase();
+      if (!low) return false;
+      return low.includes('cxc') || low.includes('origen:cxc') || low.includes('pago cxc') || low.includes('creado automaticamente') || low.includes('creado automáticamente');
+    } catch (e) { return false; }
+  }, [initialData]);
+
   useEffect(() => {
     if (!initialData) return;
     setFormData((f) => ({
@@ -115,13 +125,13 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    // Validación mínima: cuenta_id es requerida en DB
-    if (!formData.cuenta_id) {
+    // Validación mínima: cuenta_id es requerida en DB (solo si no es edición limitada por CxC)
+    if (!formData.cuenta_id && !isFromCxc) {
       alert('Debes seleccionar un banco/cuenta.');
       return;
     }
 
-    if (formData.incluirFlujoCaja && formData.tipo === 'emitido') {
+    if (formData.incluirFlujoCaja && formData.tipo === 'emitido' && !isFromCxc) {
       try {
         await registrarMovimientoEfectivo({
           fecha: formData.fechaEmision,
@@ -137,7 +147,15 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
       }
     }
 
-    onSave(formData);
+    // Si el cheque proviene de CxC, solo enviar los campos permitidos (fecha_cobro, estado, user_id si aplica, y id)
+    const toSend = isFromCxc ? {
+      id: formData.id || null,
+      fecha_cobro: formData.fechaCobro || null,
+      estado: formData.estado || null,
+      user_id: formData.user_id || null,
+    } : formData;
+
+    onSave(toSend);
     onClose();
   };
 
@@ -165,6 +183,7 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                     value={formData.tipo}
                     onChange={(e) => setFormData({ ...formData, tipo: e.target.value })}
                     required
+                    disabled={isFromCxc}
                   >
                     <option value="emitido">Emitido</option>
                     <option value="recibido">Recibido</option>
@@ -178,6 +197,7 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                     value={formData.cuenta_id}
                     onChange={(e) => setFormData({ ...formData, cuenta_id: e.target.value })}
                     required
+                    disabled={isFromCxc}
                   >
                     <option value="">Seleccionar banco</option>
                     {cuentasOptions.map(opt => (
@@ -194,6 +214,7 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                     value={formData.numeroCheque}
                     onChange={(e) => setFormData({ ...formData, numeroCheque: e.target.value })}
                     required
+                    disabled={isFromCxc}
                   />
                 </div>
 
@@ -216,6 +237,7 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                     value={formData.fechaEmision}
                     onChange={(e) => setFormData({ ...formData, fechaEmision: e.target.value })}
                     required
+                    disabled={isFromCxc}
                   />
                 </div>
 
@@ -227,6 +249,7 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                     value={formData.fechaCobro}
                     onChange={(e) => setFormData({ ...formData, fechaCobro: e.target.value })}
                     placeholder="Opcional"
+                    required={false}
                   />
                   <div className="form-text">Opcional (si aún no se cobra, puede quedar vacío).</div>
                 </div>
@@ -241,6 +264,7 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                     required
                     min={0}
                     step="0.01"
+                    disabled={isFromCxc}
                   />
                 </div>
 
@@ -252,6 +276,7 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                     value={formData.origenDestino}
                     onChange={(e) => setFormData({ ...formData, origenDestino: e.target.value })}
                     required
+                    disabled={isFromCxc}
                   />
                 </div>
 
@@ -278,6 +303,7 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                     value={formData.concepto}
                     onChange={(e) => setFormData({ ...formData, concepto: e.target.value })}
                     required
+                    disabled={isFromCxc}
                   />
                 </div>
 
@@ -289,6 +315,7 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                       id="incluirFlujoCaja"
                       checked={formData.incluirFlujoCaja}
                       onChange={(e) => setFormData({ ...formData, incluirFlujoCaja: e.target.checked })}
+                      disabled={isFromCxc}
                     />
                     <label className="form-check-label" htmlFor="incluirFlujoCaja">
                       Incluir en el Flujo de Caja
@@ -303,8 +330,15 @@ function NuevoCheque({ onClose, onSave, initialData = null }) {
                     value={formData.observaciones}
                     onChange={(e) => setFormData({ ...formData, observaciones: e.target.value })}
                     rows={3}
+                    disabled={isFromCxc}
                   />
                 </div>
+
+                {isFromCxc && (
+                  <div className="col-12">
+                    <div className="alert alert-warning small">Este cheque está vinculado a un pago de CxC; la edición está limitada en este formulario. Solo se puede modificar la fecha de cobro y el estado.</div>
+                  </div>
+                )}
               </div>
             </div>
 

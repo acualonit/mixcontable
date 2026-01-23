@@ -6,6 +6,7 @@ import CuentasCobrarEliminadas from '../components/cuentas/CuentasCobrarEliminad
 import { exportToExcel } from '../utils/exportUtils';
 import ventasApi from '../utils/ventasApi';
 import { API_BASE_URL } from '../utils/configApi';
+import chequesApi from '../utils/chequesApi';
 
 function CuentasXCobrar() {
   const [filtros, setFiltros] = useState({
@@ -54,6 +55,16 @@ function CuentasXCobrar() {
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     const yyyy = d.getFullYear();
     return `${dd}/${mm}/${yyyy}`;
+  };
+
+  // Helper común para calcular días de mora de forma consistente (solo fecha, sin horas)
+  const calcDiasMora = (fechaVencimiento) => {
+    const d = parseDate(fechaVencimiento);
+    if (!d) return 0;
+    const hoy = new Date();
+    const hoyLocal = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+    const vencLocal = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    return vencLocal < hoyLocal ? Math.floor((hoyLocal - vencLocal) / (1000 * 60 * 60 * 24)) : 0;
   };
 
   // Helper: sumar montos desde la estructura de pagos del backend
@@ -109,15 +120,7 @@ function CuentasXCobrar() {
       const cliente = typeof v.cliente === 'string' ? v.cliente : (v.cliente?.nombre || v.cliente?.razon_social || v.cliente?.name || '') || '';
       const rut = v.cliente?.rut || v.cliente_rut || v.rut || '';
       const documento = v.folioVenta || v.folio_venta || v.folio || v.documentoVenta || v.documento || '';
-      const diasMora = (function(){
-        const d = parseDate(fechaVenc);
-        if (!d) return 0;
-        // comparar solo la parte de fecha (sin horas) para evitar off-by-one por zona
-        const hoy = new Date();
-        const hoyLocal = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
-        const vencLocal = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-        return vencLocal < hoyLocal ? Math.floor((hoyLocal - vencLocal)/(1000*60*60*24)) : 0;
-      })();
+      const diasMora = calcDiasMora(fechaVenc);
       const estado = (Number(montoPagado) >= Number(montoTotal)) ? 'pagada' : (diasMora > 0 ? 'vencida' : 'pendiente');
 
       return {
@@ -328,6 +331,82 @@ function CuentasXCobrar() {
     try {
       const monto = Number(pago.monto) || 0;
 
+      // Si el método es cheque, crear registro en módulo Cheques antes de enviar el pago
+      let createdCheque = null;
+      try {
+        if (pago?.metodoPago && String(pago.metodoPago.tipo).toLowerCase() === 'cheque') {
+          // Determinar cuenta bancaria objetivo: preferir cuenta proveniente de la venta (sucursal)
+          let cuentaBancariaParaCheque = pago.metodoPago?.cuenta_bancaria_id ?? pago.cuenta_bancaria_id ?? null;
+          try {
+            if (!cuentaBancariaParaCheque) {
+              const ventaIdTmp = (cuentaSeleccionada?.origen === 'Venta' && String(cuentaSeleccionada.id).startsWith('venta-'))
+                ? Number(String(cuentaSeleccionada.id).replace(/^venta-/, ''))
+                : (payload?.venta_id ?? null);
+              if (ventaIdTmp) {
+                try {
+                  const ventaDetalle = await ventasApi.getVenta(ventaIdTmp);
+                  // Buscar campo común usado para cuenta bancaria en ventas
+                  cuentaBancariaParaCheque = ventaDetalle?.cuenta_bancaria_id ?? ventaDetalle?.cuenta_bancaria ?? ventaDetalle?.cuenta_bancaria_id ?? ventaDetalle?.cuenta_bancaria_id ?? null;
+                } catch (e) {
+                  // no abortar si falla
+                }
+              }
+            }
+
+            // Nuevo fallback: si no se resolvió cuenta, pedir al backend la lista de cuentas y usar la primera disponible
+            if (!cuentaBancariaParaCheque) {
+              try {
+                const res = await fetch(`${API_BASE_URL}/banco/cuentas`, { credentials: 'include' });
+                if (res.ok) {
+                  const list = await res.json().catch(() => null);
+                  const cuentasList = Array.isArray(list) ? list : (list?.data ?? []);
+                  if (Array.isArray(cuentasList) && cuentasList.length > 0) {
+                    const first = cuentasList[0];
+                    cuentaBancariaParaCheque = first?.id ?? first?.ID ?? first?.Id ?? null;
+                  }
+                }
+              } catch (e) {
+                // no abortar si falla
+              }
+            }
+          } catch (e) {
+            // ignore
+          }
+
+          // Preparar payload para crear cheque (recibido)
+          const chequePayload = {
+            tipo: 'recibido',
+            cuenta_id: cuentaBancariaParaCheque ?? null,
+            numero_cheque: pago.metodoPago?.numeroCheque ?? (pago.comprobante ?? null),
+            fecha_emision: pago.fecha ?? undefined,
+            fecha_cobro: pago.metodoPago?.fechaCobroCheque ?? pago.metodoPago?.fechaCobro ?? pago.fecha ?? undefined,
+            beneficiario: (cuentaSeleccionada?.cliente ?? null),
+            concepto: pago.observaciones ?? '',
+            monto: monto,
+            observaciones: 'Creado automáticamente desde pago CxC',
+            estado: 'Cobrado'
+          };
+
+          try {
+            // Solo intentar crear cheque automático si tenemos una cuenta bancaria válida
+            if (!chequePayload.cuenta_id) {
+              console.warn('No se creó cheque automático: no se resolvió cuenta bancaria (cuenta_id es null)');
+              createdCheque = null;
+            } else {
+              const ch = await chequesApi.createCheque(chequePayload);
+              // la API puede devolver el cheque en diferentes estructuras; intentar obtener id
+              createdCheque = ch?.data ?? ch?.cheque ?? ch ?? null;
+            }
+          } catch (e) {
+            // No abortar el pago si falla la creación del cheque, sólo advertir en consola
+            console.warn('No se pudo crear cheque automáticamente:', e?.message || e);
+            createdCheque = null;
+          }
+        }
+      } catch (e) {
+        console.warn('Error verificando método cheque:', e?.message || e);
+      }
+
       // Preparar payload para API
       const payload = {
         fecha_pago: pago.fecha,
@@ -339,6 +418,12 @@ function CuentasXCobrar() {
         banco_id: pago.metodoPago?.banco_id ?? pago.banco_id ?? (pago.metodoPago?.cuenta_bancaria_id ?? pago.cuenta_bancaria_id ?? null),
         observaciones: pago.observaciones ?? null
       };
+
+      // Si se creó cheque, incluir referencia clara para rastrearlo
+      if (createdCheque) {
+        const chequeId = createdCheque?.id ?? createdCheque?.cheque_id ?? createdCheque?.ID ?? null;
+        if (chequeId) payload.comprobante = `CHEQUE:${chequeId}`;
+      }
 
       if (cuentaSeleccionada?.origen === 'Venta' && String(cuentaSeleccionada.id).startsWith('venta-')) {
         payload.venta_id = Number(String(cuentaSeleccionada.id).replace(/^venta-/, '')) || null;
@@ -453,9 +538,7 @@ function CuentasXCobrar() {
             className="btn btn-light"
             onClick={() => {
               const dataToExport = filteredCuentas.map(cuenta => {
-                const fv = parseDate(cuenta.fechaVencimiento);
-                const hoy = new Date();
-                const diasMora = fv ? (fv < hoy ? Math.floor((hoy - fv) / (1000 * 60 * 60 * 24)) : 0) : 0;
+                const diasMora = calcDiasMora(cuenta.fechaVencimiento);
 
                 return {
                   Cliente: cuenta.cliente,
@@ -598,9 +681,7 @@ function CuentasXCobrar() {
               </thead>
               <tbody>
                 {filteredCuentas.map((cuenta) => {
-                  const hoy = new Date();
-                  const fechaVencimientoDate = parseDate(cuenta.fechaVencimiento);
-                  const diasMora = fechaVencimientoDate ? (fechaVencimientoDate < hoy ? Math.floor((hoy - fechaVencimientoDate) / (1000 * 60 * 60 * 24)) : 0) : 0;
+                  const diasMora = calcDiasMora(cuenta.fechaVencimiento);
 
                   return (
                     <tr key={cuenta.id}>

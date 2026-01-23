@@ -339,6 +339,109 @@ class CuentasCobrarController extends Controller
                 return response()->json(['message' => 'El monto informado excede el saldo pendiente', 'saldo_pendiente' => $saldoActual], 422);
             }
 
+            // Si el método es cheque, intentar crear/asegurar un cheque en DB y forzar movimiento bancario
+            try {
+                $mpLower = strtolower((string)($data['metodo_pago'] ?? ''));
+                if (strpos($mpLower, 'cheque') !== false) {
+                    // extraer cheque desde comprobante si existe
+                    $chequeIdFromComprobante = null;
+                    if (!empty($data['comprobante']) && preg_match('/CHEQUE[:\-]?\s*(\d+)/i', $data['comprobante'], $mch)) {
+                        $chequeIdFromComprobante = (int)$mch[1];
+                    }
+
+                    if (empty($chequeIdFromComprobante)) {
+                        // determinar cuenta para el cheque: preferir bancoIdResolved -> request cuenta_bancaria_id -> cuenta.cuenta_bancaria_id
+                        $cuentaChequeId = $bancoIdResolved ?? ($data['cuenta_bancaria_id'] ?? null) ?? ($cuenta->cuenta_bancaria_id ?? null);
+
+                        // preparar payload mínimo para cheques usando columnas reales
+                        try {
+                            if (\Schema::hasTable('cheques')) {
+                                $chequeCols = \Schema::getColumnListing('cheques');
+                                $insertCheque = [];
+                                // valores básicos
+                                if (in_array('cuenta_id', $chequeCols, true) && !empty($cuentaChequeId)) $insertCheque['cuenta_id'] = (int)$cuentaChequeId;
+                                if (in_array('numero_cheque', $chequeCols, true) && !empty($data['comprobante'])) $insertCheque['numero_cheque'] = substr((string)$data['comprobante'],0,100);
+                                if (in_array('fecha_emision', $chequeCols, true)) $insertCheque['fecha_emision'] = $data['fecha_pago'] ?? date('Y-m-d');
+                                if (in_array('fecha_cobro', $chequeCols, true)) $insertCheque['fecha_cobro'] = $data['fecha_pago'] ?? date('Y-m-d');
+                                if (in_array('beneficiario', $chequeCols, true)) $insertCheque['beneficiario'] = null;
+                                if (in_array('monto', $chequeCols, true)) $insertCheque['monto'] = (float)$monto;
+                                if (in_array('observaciones', $chequeCols, true)) $insertCheque['observaciones'] = 'Creado automáticamente desde pago CxC';
+                                if (in_array('estado', $chequeCols, true)) $insertCheque['estado'] = 'Cobrado';
+                                if (in_array('tipo', $chequeCols, true)) $insertCheque['tipo'] = 'Recibidos';
+                                if (in_array('created_at', $chequeCols, true)) $insertCheque['created_at'] = now();
+                                if (in_array('updated_at', $chequeCols, true)) $insertCheque['updated_at'] = now();
+
+                                if (!empty($insertCheque)) {
+                                    try {
+                                        // Normalizar 'tipo' a valores esperados por la tabla (Emitidos/Recibidos)
+                                        if (array_key_exists('tipo', $insertCheque)) {
+                                            $tIn = strtolower((string)$insertCheque['tipo']);
+                                            $mapT = ['emitido' => 'Emitidos', 'emitidos' => 'Emitidos', 'recibido' => 'Recibidos', 'recibidos' => 'Recibidos', 'recibos' => 'Recibidos'];
+                                            $insertCheque['tipo'] = $mapT[$tIn] ?? $insertCheque['tipo'];
+                                        }
+
+                                        // Normalizar 'estado' a valores permitidos (Pendiente/Cobrado/Rechazado/Prestado)
+                                        if (array_key_exists('estado', $insertCheque)) {
+                                            $eIn = strtolower((string)$insertCheque['estado']);
+                                            $mapE = [
+                                                '' => 'Pendiente', 'pendiente' => 'Pendiente', 'cobrado' => 'Cobrado', 'rechazado' => 'Rechazado', 'prestado' => 'Prestado',
+                                                'emitido' => 'Pendiente', 'emitidos' => 'Pendiente', 'anulado' => 'Rechazado'
+                                            ];
+                                            $mapped = $mapE[$eIn] ?? $insertCheque['estado'];
+                                            $insertCheque['estado'] = in_array($mapped, ['Pendiente','Cobrado','Rechazado','Prestado'], true) ? $mapped : 'Pendiente';
+                                        }
+
+                                        // Asegurar que existe cuenta_id antes de intentar insertar (evita error SQL "Field 'cuenta_id' doesn't have a default value")
+                                        if (empty($insertCheque['cuenta_id'])) {
+                                            // intentar fallback usando cuentaChequeId o bancoIdResolved o la cuenta de la cuenta_cobrar
+                                            $fallbackCuenta = $cuentaChequeId ?? ($bancoIdResolved ?? ($cuenta->cuenta_bancaria_id ?? null));
+                                            if (!empty($fallbackCuenta)) $insertCheque['cuenta_id'] = (int)$fallbackCuenta;
+                                        }
+
+                                        if (empty($insertCheque['cuenta_id'])) {
+                                            try { Log::warning('storePago: se omitió creación automática de cheque porque no se pudo resolver cuenta_id', ['venta_id' => $data['venta_id'] ?? null, 'payload' => $insertCheque]); } catch (\Throwable $__ ) {}
+                                        } else {
+                                            $newChequeId = DB::table('cheques')->insertGetId($insertCheque);
+                                            // actualizar comprobante del pago para referenciar el cheque
+                                            if ($newChequeId) {
+                                                $data['comprobante'] = 'CHEQUE:' . $newChequeId;
+                                            }
+
+                                            // force crear movimiento bancario a traves del ChequeController helper
+                                            try {
+                                                $chequeController = app()->make(\App\Http\Controllers\ChequeController::class);
+                                                if (method_exists($chequeController, 'generarMovimientoPorCheque') && !empty($newChequeId)) {
+                                                    $chequeController->generarMovimientoPorCheque($newChequeId);
+                                                }
+                                            } catch (\Throwable $e) {
+                                                try { Log::error('storePago: error generando movimiento por cheque automatico', ['error' => $e->getMessage(), 'insertCheque' => $insertCheque]); } catch (\Throwable $__ ) {}
+                                            }
+                                        }
+                                    } catch (\Throwable $e) {
+                                        try { Log::warning('storePago: no se pudo insertar cheque automatico', ['error' => $e->getMessage(), 'payload' => $insertCheque]); } catch (\Throwable $__ ) {}
+                                    }
+                                }
+                            }
+                        } catch (\Throwable $e) {
+                            try { Log::warning('storePago: fallo preparando cheque automatico', ['error' => $e->getMessage()]); } catch (\Throwable $__ ) {}
+                        }
+                    } else {
+                        // Si ya viene referencia a cheque, intentar generar movimiento por si falta
+                        try {
+                            $chequeController = app()->make(\App\Http\Controllers\ChequeController::class);
+                            if (method_exists($chequeController, 'generarMovimientoPorCheque')) {
+                                $chequeController->generarMovimientoPorCheque($chequeIdFromComprobante);
+                            }
+                        } catch (\Throwable $e) {
+                            try { Log::warning('storePago: error reconciliando cheque desde comprobante', ['error' => $e->getMessage(), 'cheque_ref' => $chequeIdFromComprobante]); } catch (\Throwable $__ ) {}
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                // no bloquear flujo de pago por fallas en cheque automático
+                try { Log::warning('storePago: error en flujo automatico de cheque', ['error' => $e->getMessage()]); } catch (\Throwable $__ ) {}
+            }
+
             $insertPago = [
                 'cuenta_cobrar_id' => $cuentaId,
                 'fecha_pago' => $data['fecha_pago'],
@@ -424,11 +527,40 @@ class CuentasCobrarController extends Controller
                 if (\Schema::hasTable('movimientos_banco') && !empty($data['metodo_pago'])) {
                     $mp = strtolower(trim($data['metodo_pago']));
                     // Solo estos métodos deben impactar banco (aceptamos 'transbank' como alias histórico)
-                    $metodosBanco = ['transferencia','tarjeta debito','tarjeta credito','pago online','debito','credito','online','transferencia bancaria','transbank'];
+                    $metodosBanco = ['transferencia','tarjeta debito','tarjeta credito','pago online','debito','credito','online','transferencia bancaria','transbank', 'cheque'];
                     $isBanco = false;
                     foreach ($metodosBanco as $m) { if (strpos($mp, $m) !== false) { $isBanco = true; break; } }
 
                     if ($isBanco) {
+                        // Si es cheque, intentar extraer ID desde comprobante (FORMATO: CHEQUE:123 o CHEQUE-123)
+                        $chequeIdFromComprobante = null;
+                        try {
+                            if (!empty($data['comprobante'])) {
+                                if (preg_match('/CHEQUE[:\-]?\s*(\d+)/i', $data['comprobante'], $mm)) {
+                                    $chequeIdFromComprobante = (int)$mm[1];
+                                }
+                            }
+                        } catch (\Throwable $__) { $chequeIdFromComprobante = null; }
+
+                        // Si tenemos un cheque referenciado, obtener su cuenta_id y forzar estado Cobrado si es necesario
+                        if (!empty($chequeIdFromComprobante) && \Schema::hasTable('cheques')) {
+                            try {
+                                $chequeRow = DB::table('cheques')->where('id', $chequeIdFromComprobante)->first();
+                                if ($chequeRow) {
+                                    if (empty($cuentaBancoId) && !empty($chequeRow->cuenta_id)) {
+                                        $cuentaBancoId = (int)$chequeRow->cuenta_id;
+                                    }
+                                    // actualizar estado del cheque a Cobrado si aún no lo está
+                                    $estadoCheque = strtolower(trim((string)($chequeRow->estado ?? '')));
+                                    if ($estadoCheque !== 'cobrado') {
+                                        try {
+                                            DB::table('cheques')->where('id', $chequeIdFromComprobante)->update(['estado' => 'Cobrado', 'fecha_cobro' => $data['fecha_pago'] ?? now(), 'updated_at' => now()]);
+                                        } catch (\Throwable $__) { /* ignore */ }
+                                    }
+                                }
+                            } catch (\Throwable $__) { /* ignore */ }
+                        }
+
                         // USAR LA MISMA CUENTA/BANCO QUE SE GUARDÓ EN EL PAGO (CXC)
                         // prioridad: banco_id resuelto -> cuenta_bancaria_id del request -> cuenta_bancaria_id de la cuenta_cobrar
                         $cuentaBancoId = null;
@@ -460,6 +592,8 @@ class CuentasCobrarController extends Controller
                                 $categoriaCandidate = 'Tarjeta Credito';
                             } elseif (strpos($mp, 'transferencia') !== false) {
                                 $categoriaCandidate = 'Transferencia';
+                            } elseif (strpos($mp, 'cheque') !== false) {
+                                $categoriaCandidate = 'Cheque';
                             }
 
                             // agregar tag en observaciones para poder rastrear la venta/cuenta
@@ -505,7 +639,24 @@ class CuentasCobrarController extends Controller
                                 if (in_array($k, $cols)) $insert[$k] = $v;
                             }
 
-                            if (!empty($insert)) {
+                            // Evitar duplicados: si ya existe un movimiento para este cheque_id o misma referencia+monto+fecha, no insertar
+                            $shouldInsert = true;
+                            try {
+                                if (!empty($chequeIdFromComprobante) && in_array('cheque_id', $cols, true)) {
+                                    $exists = DB::table('movimientos_banco')->where('cheque_id', (int)$chequeIdFromComprobante)->exists();
+                                    if ($exists) $shouldInsert = false;
+                                    // si no existe y la tabla tiene cheque_id, asignarlo
+                                    if ($shouldInsert && in_array('cheque_id', $cols, true)) $insert['cheque_id'] = (int)$chequeIdFromComprobante;
+                                } else {
+                                    // fallback: buscar por referencia/monto/fecha para evitar duplicados
+                                    $query = DB::table('movimientos_banco')->where('cuenta_id', $cuentaBancoId)->where('monto', (float)$monto);
+                                    if (!empty($data['comprobante'])) $query = $query->where('referencia', $data['comprobante']);
+                                    $exists = $query->where('fecha', $data['fecha_pago'] ?? date('Y-m-d'))->exists();
+                                    if ($exists) $shouldInsert = false;
+                                }
+                            } catch (\Throwable $__) { /* ignore duplicate check errors */ }
+
+                            if (!empty($insert) && $shouldInsert) {
                                 try {
                                     Log::info('CuentasCobrarController: movimiento_banco payload', ['insert' => $insert, 'cuentaBancoId' => $cuentaBancoId, 'metodo_pago' => $data['metodo_pago'] ?? null]);
                                 } catch (\Exception $ex) {
@@ -523,6 +674,21 @@ class CuentasCobrarController extends Controller
             }
 
             DB::commit();
+
+            // Si el pago referencia a un cheque (comprobante 'CHEQUE:123'), intentar crear/el movimiento bancario
+            try {
+                if (!empty($data['comprobante']) && preg_match('/CHEQUE[:\-]?\s*(\d+)/i', $data['comprobante'], $m)) {
+                    $chequeIdRef = (int)$m[1];
+                    try {
+                        $chequeController = app()->make(\App\Http\Controllers\ChequeController::class);
+                        if (method_exists($chequeController, 'generarMovimientoPorCheque')) {
+                            $chequeController->generarMovimientoPorCheque($chequeIdRef);
+                        }
+                    } catch (\Throwable $e) {
+                        try { Log::error('CuentasCobrarController.storePago: error invoking ChequeController.generarMovimientoPorCheque', ['error' => $e->getMessage(), 'cheque_id' => $chequeIdRef]); } catch (\Throwable $__ ) {}
+                    }
+                }
+            } catch (\Throwable $__) { /* ignore */ }
 
             $pago = DB::table('pagos_cuentas_cobrar')->where('id', $pagoId)->first();
             $cuentaActualizada = DB::table('cuentas_cobrar')->where('id', $cuentaId)->first();

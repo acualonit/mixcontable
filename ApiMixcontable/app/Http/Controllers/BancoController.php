@@ -52,6 +52,46 @@ class BancoController extends Controller
         return false;
     }
 
+    // Nuevo: detectar si un movimiento bancario proviene de un CHEQUE
+    protected function movimientoEsDeCheque($mov): bool
+    {
+        if (!$mov) return false;
+
+        // Si la tabla tiene columna cheque_id y el movimiento la trae -> es de cheque
+        try {
+            if (Schema::hasTable('movimientos_banco')) {
+                $cols = Schema::getColumnListing('movimientos_banco');
+                if (in_array('cheque_id', $cols) && isset($mov->cheque_id) && $mov->cheque_id) return true;
+            }
+        } catch (\Throwable $e) {
+            // ignore
+        }
+
+        // Buscar tags comunes en observaciones/referencia/descripcion
+        $obs = '';
+        foreach (['observaciones', 'observacion', 'notes', 'nota', 'notas'] as $k) {
+            if (isset($mov->{$k}) && $mov->{$k} !== null) { $obs = (string)$mov->{$k}; break; }
+        }
+        $ref = '';
+        foreach (['referencia', 'partida', 'reference'] as $k) {
+            if (isset($mov->{$k}) && $mov->{$k} !== null) { $ref = (string)$mov->{$k}; break; }
+        }
+        $desc = '';
+        foreach (['descripcion', 'detalle', 'concepto'] as $k) {
+            if (isset($mov->{$k}) && $mov->{$k} !== null) { $desc = (string)$mov->{$k}; break; }
+        }
+
+        $combined = strtolower(trim($obs . ' ' . $ref . ' ' . $desc));
+        // detecciones para cheques
+        if (strpos($combined, 'cheque:') !== false || strpos($combined, 'cheque_id:') !== false || strpos($combined, 'origen:cheque') !== false) return true;
+        if (preg_match('/cheque\s*#?\s*\d+/', $combined)) return true;
+
+        // detecciones para CxC: marcar como 'movimiento protegido' también
+        if (strpos($combined, 'cxc_id:') !== false || strpos($combined, 'origen:cxc') !== false || strpos($combined, 'cx c') !== false || strpos($combined, 'pago cxc') !== false) return true;
+
+        return false;
+    }
+
     // Listar cuentas bancarias
     public function cuentas()
     {
@@ -270,12 +310,15 @@ class BancoController extends Controller
     // Actualizar movimiento bancario
     public function updateMovimiento(Request $request, $id)
     {
-        // No permitir editar movimientos generados automáticamente desde ventas
+        // No permitir editar movimientos generados automáticamente desde ventas o cheques
         try {
             if (Schema::hasTable('movimientos_banco')) {
                 $mov = DB::table('movimientos_banco')->where('id', $id)->first();
                 if ($this->movimientoEsDeVenta($mov)) {
                     return response()->json(['message' => 'No se puede editar un movimiento proveniente de ventas'], 403);
+                }
+                if ($this->movimientoEsDeCheque($mov)) {
+                    return response()->json(['message' => 'No se puede editar un movimiento proveniente de cheques'], 403);
                 }
             }
         } catch (\Throwable $e) {
@@ -707,12 +750,15 @@ class BancoController extends Controller
     // Eliminar movimiento
     public function destroyMovimiento($id)
     {
-        // No permitir eliminar movimientos generados automáticamente desde ventas
+        // No permitir eliminar movimientos generados automáticamente desde ventas o cheques
         try {
             if (Schema::hasTable('movimientos_banco')) {
                 $mov = DB::table('movimientos_banco')->where('id', $id)->first();
                 if ($this->movimientoEsDeVenta($mov)) {
                     return response()->json(['message' => 'No se puede eliminar un movimiento proveniente de ventas'], 403);
+                }
+                if ($this->movimientoEsDeCheque($mov)) {
+                    return response()->json(['message' => 'No se puede eliminar un movimiento proveniente de cheques'], 403);
                 }
             }
         } catch (\Throwable $e) {
